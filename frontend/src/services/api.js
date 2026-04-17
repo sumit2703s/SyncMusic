@@ -50,8 +50,8 @@ export const playSongInRoom = async (roomId, song, timestamp = 0) => {
   return data;
 };
 
-export const pauseSongInRoom = async (roomId, timestamp = 0) => {
-  const { data } = await api.post(`/api/rooms/${roomId}/pause`, { timestamp });
+export const pauseSongInRoom = async (roomId, timestamp = 0, songId = null) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/pause`, { timestamp, songId });
   return data;
 };
 

@@ -61,6 +61,12 @@ async def play_song(room_id: str, payload: dict[str, Any]):
         raise HTTPException(status_code=400, detail="Invalid song payload")
 
     state = await redis_service.get_room_state(room_id) or {}
+    
+    # Validation: Only allow "Play" if the song matches the CURRENT song
+    # This prevents the "First Song Reversion" loop.
+    if state.get("songId") and state.get("songId") != song.get("songId"):
+        return {"success": True, "info": "Ignored stale play command"}
+
     state.update(
         {
             "songId": song.get("songId", ""),
@@ -84,7 +90,13 @@ async def play_song(room_id: str, payload: dict[str, Any]):
 @router.post("/{room_id}/pause")
 async def pause_song(room_id: str, payload: dict[str, Any]):
     timestamp = float(payload.get("timestamp", 0.0))
+    song_id = payload.get("songId")
     state = await redis_service.get_room_state(room_id) or {}
+    
+    # Validation: Only allow "Pause" if the song matches the CURRENT song
+    if song_id and state.get("songId") != song_id:
+        return {"success": True, "info": "Ignored stale pause command"}
+
     state.update({"timestamp": timestamp, "isPlaying": False, "startedAt": None})
     await redis_service.set_room_state(room_id, state)
     await sio.emit("song_paused", {"roomId": room_id, "state": state}, room=room_id)

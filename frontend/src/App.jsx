@@ -286,14 +286,15 @@ const App = () => {
     socket.emit("sync_time", { roomId, songId, timestamp, isPlaying });
   };
 
-  const onPlaybackChange = (type, timestamp) => {
+  const onPlaybackChange = (type, timestamp, songId) => {
     if (!roomId) return;
     if (type === "play") {
-      if (!state.songId) return;
+      if (!songId) return;
       playSongInRoom(
         roomId,
         {
           ...state,
+          songId: songId, // Ensure we use the reported songId
           durationSec: state.durationSec || 30,
         },
         timestamp
@@ -302,7 +303,7 @@ const App = () => {
         console.error("Play failed:", detail);
       });
     } else {
-      pauseSongInRoom(roomId, timestamp).catch((error) => {
+      pauseSongInRoom(roomId, timestamp, songId).catch((error) => {
         const detail = error?.response?.data?.detail || error?.message || "Unknown error";
         console.error("Pause failed:", detail);
       });

@@ -527,14 +527,15 @@ const App = () => {
     socket.emit("sync_time", { roomId, songId, timestamp, isPlaying });
   };
 
-  const onPlaybackChange = (type, timestamp) => {
+  const onPlaybackChange = (type, timestamp, songId) => {
     if (!roomId) return;
     if (type === "play") {
-      if (!state.songId) return;
+      if (!songId) return;
       playSongInRoom(
         roomId,
         {
           ...state,
+          songId: songId, // Ensure we use the reported songId
           durationSec: state.durationSec || 30,
         },
         timestamp
@@ -543,7 +544,7 @@ const App = () => {
         console.error("Play failed:", detail);
       });
     } else {
-      pauseSongInRoom(roomId, timestamp).catch((error) => {
+      pauseSongInRoom(roomId, timestamp, songId).catch((error) => {
         const detail = error?.response?.data?.detail || error?.message || "Unknown error";
         console.error("Pause failed:", detail);
       });
@@ -1167,9 +1168,9 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
             }
             
             if (event.data === window.YT.PlayerState.PLAYING) {
-              onPlaybackChange("play", event.target.getCurrentTime());
+              onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
             } else if (event.data === window.YT.PlayerState.PAUSED) {
-              onPlaybackChange("pause", event.target.getCurrentTime());
+              onPlaybackChange("pause", event.target.getCurrentTime(), song?.songId);
             } else if (event.data === window.YT.PlayerState.ENDED) {
               console.log("DEBUG: YT Ended reached");
               if (isHost && onNext) onNext();
@@ -1205,7 +1206,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     setTimeout(() => {
       suppressEmitRef.current = false;
     }, 1000);
-  }, [song?.isPlaying]);
+  }, [song?.isPlaying, song?.songId]); // Add songId dependency
 
   // Handle Sync Time changes
   useEffect(() => {
@@ -1312,6 +1313,8 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
           ref={audioRef} 
           controls 
           className={`audio-player ${song?.source === "youtube" ? "hidden" : ""}`}
+          onPlay={() => { if (!suppressEmitRef.current) onPlaybackChange("play", audioRef.current.currentTime, song?.songId); }}
+          onPause={() => { if (!suppressEmitRef.current) onPlaybackChange("pause", audioRef.current.currentTime, song?.songId); }}
           onEnded={() => { if (isHost && onNext) onNext(); }}
         />
       </div>
@@ -1502,8 +1505,8 @@ export const playSongInRoom = async (roomId, song, timestamp = 0) => {
   return data;
 };
 
-export const pauseSongInRoom = async (roomId, timestamp = 0) => {
-  const { data } = await api.post(`/api/rooms/${roomId}/pause`, { timestamp });
+export const pauseSongInRoom = async (roomId, timestamp = 0, songId = null) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/pause`, { timestamp, songId });
   return data;
 };
 
@@ -2725,6 +2728,12 @@ async def play_song(room_id: str, payload: dict[str, Any]):
         raise HTTPException(status_code=400, detail="Invalid song payload")
 
     state = await redis_service.get_room_state(room_id) or {}
+    
+    # Validation: Only allow "Play" if the song matches the CURRENT song
+    # This prevents the "First Song Reversion" loop.
+    if state.get("songId") and state.get("songId") != song.get("songId"):
+        return {"success": True, "info": "Ignored stale play command"}
+
     state.update(
         {
             "songId": song.get("songId", ""),
@@ -2748,7 +2757,13 @@ async def play_song(room_id: str, payload: dict[str, Any]):
 @router.post("/{room_id}/pause")
 async def pause_song(room_id: str, payload: dict[str, Any]):
     timestamp = float(payload.get("timestamp", 0.0))
+    song_id = payload.get("songId")
     state = await redis_service.get_room_state(room_id) or {}
+    
+    # Validation: Only allow "Pause" if the song matches the CURRENT song
+    if song_id and state.get("songId") != song_id:
+        return {"success": True, "info": "Ignored stale pause command"}
+
     state.update({"timestamp": timestamp, "isPlaying": False, "startedAt": None})
     await redis_service.set_room_state(room_id, state)
     await sio.emit("song_paused", {"roomId": room_id, "state": state}, room=room_id)

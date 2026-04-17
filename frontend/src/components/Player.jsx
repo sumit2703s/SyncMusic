@@ -77,9 +77,9 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
             }
             
             if (event.data === window.YT.PlayerState.PLAYING) {
-              onPlaybackChange("play", event.target.getCurrentTime());
+              onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
             } else if (event.data === window.YT.PlayerState.PAUSED) {
-              onPlaybackChange("pause", event.target.getCurrentTime());
+              onPlaybackChange("pause", event.target.getCurrentTime(), song?.songId);
             } else if (event.data === window.YT.PlayerState.ENDED) {
               console.log("DEBUG: YT Ended reached");
               if (isHost && onNext) onNext();
@@ -115,7 +115,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     setTimeout(() => {
       suppressEmitRef.current = false;
     }, 1000);
-  }, [song?.isPlaying]);
+  }, [song?.isPlaying, song?.songId]); // Add songId dependency
 
   // Handle Sync Time changes
   useEffect(() => {
@@ -222,6 +222,8 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
           ref={audioRef} 
           controls 
           className={`audio-player ${song?.source === "youtube" ? "hidden" : ""}`}
+          onPlay={() => { if (!suppressEmitRef.current) onPlaybackChange("play", audioRef.current.currentTime, song?.songId); }}
+          onPause={() => { if (!suppressEmitRef.current) onPlaybackChange("pause", audioRef.current.currentTime, song?.songId); }}
           onEnded={() => { if (isHost && onNext) onNext(); }}
         />
       </div>
