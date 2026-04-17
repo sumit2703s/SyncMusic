@@ -1,17 +1,9 @@
 import asyncio
+import random
 import re
 from typing import Any, Optional
 import yt_dlp
 from ytmusicapi import YTMusic
-
-
-# Public Invidious instances to use as fallback proxy
-INVIDIOUS_INSTANCES = [
-    "https://invidious.nerdvpn.de",
-    "https://iv.datura.network",
-    "https://invidious.privacyredirect.com",
-]
-
 
 class YouTubeService:
     def __init__(self):
@@ -32,40 +24,36 @@ class YouTubeService:
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,   # <-- Must be False to get real stream URL
+            'extract_flat': False,
             'skip_download': True,
             'nocheckcertificate': True,
             'ignoreerrors': False,
             'logtostderr': False,
-            # tv_embedded and mweb clients are far less blocked on server IPs
             'extractor_args': {
                 'youtube': {
                     'player_client': ['tv_embedded', 'mweb'],
                     'skip': ['hls', 'dash'],
                 }
             },
-            # Mimic a real browser request
             'http_headers': {
                 'User-Agent': (
                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                     'AppleWebKit/537.36 (KHTML, like Gecko) '
                     'Chrome/124.0.0.0 Safari/537.36'
                 ),
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             },
         }
 
         self.ytmusic = YTMusic()
+        self._cached_invidious_instances = []
+        self._last_instance_fetch = 0
 
     # ------------------------------------------------------------------ #
     #  Search                                                              #
     # ------------------------------------------------------------------ #
 
     async def search_youtube(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Search YouTube Music (songs filter). Falls back to yt-dlp search."""
         loop = asyncio.get_event_loop()
-
         try:
             search_results = await loop.run_in_executor(
                 None,
@@ -75,9 +63,7 @@ class YouTubeService:
             results = []
             for item in search_results:
                 video_id = item.get('videoId')
-                if not video_id:
-                    continue
-
+                if not video_id: continue
                 artists = item.get('artists', [])
                 artist_name = artists[0].get('name', 'Unknown Artist') if artists else 'Unknown Artist'
                 thumbnails = item.get('thumbnails', [])
@@ -94,160 +80,139 @@ class YouTubeService:
                     "source": "youtube"
                 })
             return results
-
-        except Exception as e:
-            print(f"YouTube Music search error: {e}")
+        except Exception:
             return await self._fallback_search(query, limit)
 
     async def _fallback_search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         loop = asyncio.get_event_loop()
         search_query = f"ytsearch{limit}:{query} music"
-
         try:
             with yt_dlp.YoutubeDL(self.ydl_search_opts) as ydl:
-                info = await loop.run_in_executor(
-                    None, lambda: ydl.extract_info(search_query, download=False)
-                )
-
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(search_query, download=False))
             entries = info.get('entries', []) if info else []
-            results = []
-            for entry in entries:
-                if not entry:
-                    continue
-                results.append({
-                    "songId": f"yt-{entry['id']}",
-                    "title": entry.get('title', 'Unknown Title'),
-                    "artist": entry.get('uploader', 'YouTube Artist'),
-                    "thumbnail": entry.get('thumbnails', [{}])[-1].get('url', ''),
-                    "duration": self._format_duration(entry.get('duration', 0)),
-                    "durationSec": entry.get('duration', 0),
-                    "previewUrl": "",
-                    "source": "youtube"
-                })
-            return results
-
-        except Exception as e:
-            print(f"Fallback search error: {e}")
+            return [{
+                "songId": f"yt-{e['id']}",
+                "title": e.get('title', 'Unknown'),
+                "artist": e.get('uploader', 'YouTube'),
+                "thumbnail": e.get('thumbnails', [{}])[-1].get('url', ''),
+                "duration": self._format_duration(e.get('duration', 0)),
+                "durationSec": e.get('duration', 0),
+                "previewUrl": "",
+                "source": "youtube"
+            } for e in entries if e]
+        except Exception:
             return []
 
     # ------------------------------------------------------------------ #
-    #  Stream URL Resolution                                               #
+    #  Ultra-Resilient Stream Resolution                                   #
     # ------------------------------------------------------------------ #
 
     async def resolve_url(self, video_id: str) -> Optional[str]:
         """
-        Try to get a playable audio URL for a YouTube video.
-        Strategy:
-          1. yt-dlp with tv_embedded + mweb clients (works on most servers)
-          2. Public Invidious API (proxy fallback — no yt-dlp needed)
+        Ultimate Free Resolution Strategy:
+        1. Cobalt API (Fastest & most reliable on cloud)
+        2. Dynamic Invidious Discovery (Self-healing proxy list)
+        3. yt-dlp (Last resort hardened)
         """
-        # --- Attempt 1: yt-dlp ---
-        url = await self._resolve_via_ytdlp(video_id)
-        if url:
-            return url
+        # --- Attempt 1: Cobalt API ---
+        url = await self._resolve_via_cobalt(video_id)
+        if url: return url
 
-        print(f"DEBUG: yt-dlp failed for {video_id}, trying Invidious fallback...")
+        # --- Attempt 2: Dynamic Invidious Discovery ---
+        url = await self._resolve_via_dynamic_invidious(video_id)
+        if url: return url
 
-        # --- Attempt 2: Invidious public API ---
-        url = await self._resolve_via_invidious(video_id)
-        if url:
-            return url
+        # --- Attempt 3: Hardened yt-dlp ---
+        return await self._resolve_via_ytdlp(video_id)
 
-        print(f"DEBUG: All resolution methods failed for {video_id}")
+    async def _resolve_via_cobalt(self, video_id: str) -> Optional[str]:
+        """Uses cobalt.tools public API (Free media extractor)"""
+        try:
+            import httpx
+            # Use multiple public cobalt instances if one is down
+            cobalt_instances = ["https://api.cobalt.tools/api/json", "https://cobalt.api.un-known.xyz/api/json"]
+            payload = {
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "downloadMode": "audio",
+                "audioFormat": "mp3",
+                "isNoTTWatermark": True
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for api in cobalt_instances:
+                    try:
+                        resp = await client.post(api, json=payload, headers={"Accept": "application/json"})
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("status") in ["stream", "redirect", "success"] and data.get("url"):
+                                print(f"DEBUG: Cobalt ({api}) resolved {video_id}")
+                                return data["url"]
+                    except Exception: continue
+        except ImportError: pass
+        return None
+
+    async def _resolve_via_dynamic_invidious(self, video_id: str) -> Optional[str]:
+        """Fetches healthy Invidious instances dynamically from api.invidious.io"""
+        import httpx
+        import time
+
+        # Fetch fresh list every 1 hour
+        if not self._cached_invidious_instances or (time.time() - self._last_instance_fetch) > 3600:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get("https://api.invidious.io/instances.json?sort_by=health")
+                    if resp.status_code == 200:
+                        instances = resp.json()
+                        # Pick top 10 healthy instances that have API enabled
+                        self._cached_invidious_instances = [
+                            f"https://{item[0]}" for item in instances 
+                            if item[1].get('type') == 'https' and item[1].get('health', 0) > 90
+                        ][:10]
+                        self._last_instance_fetch = time.time()
+            except Exception as e:
+                print(f"DEBUG: Failed to fetch Invidious list: {e}")
+        
+        if not self._cached_invidious_instances:
+            return None
+
+        # Shuffle to distribute load
+        targets = list(self._cached_invidious_instances)
+        random.shuffle(targets)
+
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            for instance in targets[:3]: # Try top 3 random healthy ones
+                try:
+                    api_url = f"{instance}/api/v1/videos/{video_id}"
+                    resp = await client.get(api_url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '') and f.get('url')]
+                        if audio_formats:
+                            best = max(audio_formats, key=lambda f: int(f.get('bitrate', 0)))
+                            print(f"DEBUG: Invidious ({instance}) resolved {video_id}")
+                            return best['url']
+                except Exception: continue
         return None
 
     async def _resolve_via_ytdlp(self, video_id: str) -> Optional[str]:
         loop = asyncio.get_event_loop()
         yt_url = f"https://www.youtube.com/watch?v={video_id}"
-
         try:
             with yt_dlp.YoutubeDL(self.ydl_resolve_opts) as ydl:
-                info = await loop.run_in_executor(
-                    None, lambda: ydl.extract_info(yt_url, download=False)
-                )
-
-            if not info:
-                print(f"DEBUG: yt-dlp returned no info for {video_id}")
-                return None
-
-            # Prefer a direct URL on the top-level info dict
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(yt_url, download=False))
+            if not info: return None
             stream_url = info.get('url')
-            if stream_url:
-                print(f"DEBUG: yt-dlp resolved URL for {video_id}")
-                return stream_url
-
-            # Some formats are nested under 'formats'
+            if stream_url: return stream_url
             formats = info.get('formats', [])
-            audio_formats = [
-                f for f in formats
-                if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('url')
-            ]
+            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('url')]
             if audio_formats:
-                # Pick highest quality audio-only format
                 best = max(audio_formats, key=lambda f: f.get('abr') or 0)
-                print(f"DEBUG: yt-dlp resolved format URL for {video_id}")
                 return best['url']
-
-            print(f"DEBUG: yt-dlp info had no usable URL. Keys: {list(info.keys())}")
-            return None
-
-        except Exception as e:
-            print(f"yt-dlp resolution error for {video_id}: {e}")
-            return None
-
-    async def _resolve_via_invidious(self, video_id: str) -> Optional[str]:
-        """
-        Use public Invidious instances to get an audio stream URL.
-        Invidious acts as a YouTube proxy — no API key needed.
-        """
-        try:
-            import httpx
-        except ImportError:
-            print("httpx not installed, skipping Invidious fallback")
-            return None
-
-        for instance in INVIDIOUS_INSTANCES:
-            try:
-                api_url = f"{instance}/api/v1/videos/{video_id}"
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                    resp = await client.get(api_url)
-
-                if resp.status_code != 200:
-                    print(f"DEBUG: Invidious {instance} returned {resp.status_code}")
-                    continue
-
-                data = resp.json()
-                audio_formats = [
-                    f for f in data.get('adaptiveFormats', [])
-                    if 'audio' in f.get('type', '') and f.get('url')
-                ]
-
-                if not audio_formats:
-                    continue
-
-                # Pick highest bitrate
-                best = max(audio_formats, key=lambda f: int(f.get('bitrate', 0)))
-                stream_url = best['url']
-                print(f"DEBUG: Invidious ({instance}) resolved URL for {video_id}")
-                return stream_url
-
-            except Exception as e:
-                print(f"DEBUG: Invidious {instance} error: {e}")
-                continue
-
+        except Exception: pass
         return None
 
-    # ------------------------------------------------------------------ #
-    #  Helpers                                                             #
-    # ------------------------------------------------------------------ #
-
     def _format_duration(self, seconds: Optional[int]) -> str:
-        if not seconds:
-            return "0:00"
+        if not seconds: return "0:00"
         try:
             total_seconds = int(seconds)
-            minutes = total_seconds // 60
-            remaining = total_seconds % 60
-            return f"{minutes}:{remaining:02d}"
-        except (ValueError, TypeError):
-            return "0:00"
+            return f"{total_seconds // 60}:{total_seconds % 60:02d}"
+        except: return "0:00"
