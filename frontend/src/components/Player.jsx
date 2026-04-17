@@ -62,7 +62,9 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
         autoplay: 1,
         controls: 1,
         modestbranding: 1,
-        origin: window.location.origin
+        origin: window.location.origin,
+        playsinline: 1,
+        enablejsapi: 1
       },
       events: {
         onReady: (event) => {
@@ -126,7 +128,9 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
   useEffect(() => {
     if (!socket) return;
     
-    const handleSync = ({ timestamp, isPlaying }) => {
+    const handleSync = ({ timestamp, isPlaying, songId }) => {
+      // If the sync event is for a different song, ignore it
+      if (songId && songId !== song?.songId) return;
       if (suppressEmitRef.current) return;
 
       if (song?.source === "youtube") {
@@ -178,7 +182,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
         isPlaying = !audio.paused;
       }
 
-      onSyncEmit(timestamp, isPlaying);
+      onSyncEmit(timestamp, isPlaying, song?.songId);
     }, 5000);
 
     return () => clearInterval(interval);

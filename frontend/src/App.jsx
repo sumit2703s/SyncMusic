@@ -279,9 +279,9 @@ const App = () => {
       });
   };
 
-  const onSyncEmit = (timestamp, isPlaying) => {
-    if (!roomId) return;
-    socket.emit("sync_time", { roomId, timestamp, isPlaying });
+  const onSyncEmit = (timestamp, isPlaying, songId) => {
+    if (!roomId || !songId) return;
+    socket.emit("sync_time", { roomId, songId, timestamp, isPlaying });
   };
 
   const onPlaybackChange = (type, timestamp) => {

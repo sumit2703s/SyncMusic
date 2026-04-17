@@ -187,10 +187,20 @@ async def pause_song(sid, data):
 
 @sio.on("sync_time")
 async def sync_time(sid, data):
-    room_id = data["roomId"]
+    room_id = data.get("roomId")
+    song_id = data.get("songId")
+    if not room_id or not song_id:
+        return
+
     timestamp = float(data.get("timestamp", 0.0))
     is_playing = bool(data.get("isPlaying", False))
+    
     state = await redis_service.get_room_state(room_id) or {}
+    
+    # Validation: Only sync if the client is reporting for the CURRENT song
+    if state.get("songId") != song_id:
+        return
+
     state.update(
         {
             "timestamp": timestamp,
@@ -199,7 +209,12 @@ async def sync_time(sid, data):
         }
     )
     await redis_service.set_room_state(room_id, state)
-    await sio.emit("sync_time", {"roomId": room_id, "timestamp": timestamp, "isPlaying": is_playing}, room=room_id, skip_sid=sid)
+    await sio.emit("sync_time", {
+        "roomId": room_id, 
+        "songId": song_id,
+        "timestamp": timestamp, 
+        "isPlaying": is_playing
+    }, room=room_id, skip_sid=sid)
 
 
 @sio.on("add_to_queue")
