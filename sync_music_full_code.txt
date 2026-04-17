@@ -1,0 +1,2807 @@
+# SyncMusic Full Codebase Export
+# Generated automatically
+
+================================================================================
+FILE: DEPLOYMENT.md
+================================================================================
+# Deployment Guide (Render + Vercel)
+
+This project is ready for:
+- Backend on Render
+- Frontend on Vercel
+
+## 1) Deploy Backend on Render
+
+### Option A: Blueprint (recommended)
+1. Push repo to GitHub.
+2. In Render, click **New +** -> **Blueprint**.
+3. Select your repo. Render will detect `render.yaml`.
+4. Set required environment variables in Render service:
+   - `MONGO_URI` = your MongoDB connection string (Atlas or Render Mongo)
+   - `REDIS_URL` = your Redis connection string (Render Redis or external)
+   - `CORS_ORIGINS` = your Vercel frontend URL (example: `https://music-sync.vercel.app`)
+
+### Option B: Manual Web Service
+1. **New +** -> **Web Service** -> connect repo.
+2. Set:
+   - Root directory: `backend`
+   - Build command: `pip install -r requirements.txt`
+   - Start command: `uvicorn app.main:socket_app --host 0.0.0.0 --port $PORT`
+3. Add environment variables (`MONGO_URI`, `REDIS_URL`, `CORS_ORIGINS`).
+
+After deploy, copy backend URL (example: `https://music-sync-backend.onrender.com`).
+
+## 2) Deploy Frontend on Vercel
+
+1. Import the same repo in Vercel.
+2. Set project root to `frontend`.
+3. Build settings:
+   - Framework: Vite
+   - Build command: `npm run build`
+   - Output directory: `dist`
+4. Add Vercel environment variables:
+   - `VITE_BACKEND_URL` = your Render backend URL
+   - `VITE_SOCKET_URL` = your Render backend URL
+
+Example values:
+- `VITE_BACKEND_URL=https://music-sync-backend.onrender.com`
+- `VITE_SOCKET_URL=https://music-sync-backend.onrender.com`
+
+`frontend/vercel.json` is included to support SPA route rewrites.
+
+## 3) Final CORS Update
+
+After Vercel deploy gives your final frontend domain:
+1. Go back to Render backend env vars.
+2. Update `CORS_ORIGINS` to the exact Vercel URL.
+3. Redeploy backend once.
+
+## 4) Quick Production Checklist
+
+- Backend `/health` returns `{ "status": "ok" }`
+- Frontend can create and join a room
+- Socket events work across two browser tabs/devices
+- Redis and Mongo credentials are valid
+
+
+
+================================================================================
+FILE: README.md
+================================================================================
+# SyncMusic 🎵
+
+A real-time, social music streaming platform that allows you and your friends to listen to music in perfect synchronization. 
+
+Whether you want to discover full tracks via YouTube or quickly browse snippets with high-quality previews, SyncMusic keeps everyone in the room on the same beat.
+
+## ✨ Features
+
+- **Perfect Sync**: Real-time playback synchronization via WebSockets and Redis.
+- **Dual Search Source**: 
+  - **YouTube Mode**: Resolve and stream full YouTube tracks.
+  - **Preview Mode**: Instant high-quality short previews from Deezer/iTunes.
+- **Room System**: Create or join rooms with unique IDs.
+- **Interactive UI**: Sleek, glassmorphism-based design with optimistic controls for zero-latency feel.
+- **Social Management**: Host-based skip, kick, and queue management.
+
+## 🛠 Tech Stack
+
+- **Frontend**: React, Vite, Socket.io-client, Vanilla CSS.
+- **Backend**: Python (FastAPI), Socket.io (python-socketio), Uvicorn.
+- **Data State**: Redis (State/Queue), MongoDB (User management).
+- **Processing**: yt-dlp & YTMusicAPI for media resolution.
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js & npm
+- Python 3.10+
+- Redis server (local or cloud)
+- MongoDB server (local or cloud)
+
+### Installation
+
+1. **Clone the repo**
+   ```bash
+   git clone https://github.com/yourusername/SyncMusic.git
+   cd SyncMusic
+   ```
+
+2. **Setup Backend**
+   ```bash
+   cd backend
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. **Setup Frontend**
+   ```bash
+   cd ../frontend
+   npm install
+   ```
+
+4. **Environment Variables**
+   Create a `.env` in the root and `frontend/` directories (see `.env.example` for details).
+
+5. **Run Locally**
+   - **Backend**: `uvicorn app.main:app --reload` (port 8000)
+   - **Frontend**: `npm run dev` (port 3000)
+
+## 🌐 Deployment
+
+This project is optimized for deployment on **Render** (Backend) and **Vercel** (Frontend). Detailed instructions can be found in [DEPLOYMENT.md](./DEPLOYMENT.md).
+
+## 📄 License
+
+MIT License. See [LICENSE.md](./LICENSE.md) if applicable.
+
+
+
+================================================================================
+FILE: render.yaml
+================================================================================
+services:
+  - type: web
+    name: music-sync-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:socket_app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+
+
+================================================================================
+FILE: frontend/index.html
+================================================================================
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <title>Music Sync</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+
+================================================================================
+FILE: frontend/package.json
+================================================================================
+{
+  "name": "music-sync-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 3000"
+  },
+  "dependencies": {
+    "axios": "^1.8.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
+
+
+
+================================================================================
+FILE: frontend/vercel.json
+================================================================================
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+
+
+
+================================================================================
+FILE: frontend/vite.config.js
+================================================================================
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+});
+
+
+
+================================================================================
+FILE: frontend/src/App.jsx
+================================================================================
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import Player from "./components/Player";
+import Queue from "./components/Queue";
+import Room from "./components/Room";
+import Users from "./components/Users";
+import { useSocket } from "./hooks/useSocket";
+import {
+  addSongToQueue,
+  createRoom,
+  joinRoom,
+  kickMember,
+  nextSongInRoom,
+  pauseSongInRoom,
+  playSongInRoom,
+  prevSongInRoom,
+  searchMusic,
+} from "./services/api";
+
+const randomId = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+
+const App = () => {
+  const socket = useSocket();
+  const [userId] = useState(() => randomId());
+  const [username, setUsername] = useState("");
+  const [roomId, setRoomId] = useState("");
+  const [joined, setJoined] = useState(false);
+  const [queue, setQueue] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [state, setState] = useState({});
+  const [searchQuery, setSearchQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [roomLoading, setRoomLoading] = useState(false);
+  const [roomError, setRoomError] = useState("");
+
+  const hostId = useMemo(() => state?.hostId || "", [state]);
+
+  const enterRoom = async (fn, inputUsername, inputRoomId, mode) => {
+    const cleanUsername = inputUsername?.trim() || `Guest-${String(userId).slice(0, 4)}`;
+    const cleanRoomId = inputRoomId?.trim() || "";
+
+    if (mode === "join" && !cleanRoomId) {
+      setRoomError("Enter a Room ID to join.");
+      return;
+    }
+
+    setRoomError("");
+    setRoomLoading(true);
+    try {
+      setUsername(cleanUsername);
+      const data = await fn({ roomId: cleanRoomId, userId, username: cleanUsername });
+      const nextRoomId = data.roomId || cleanRoomId;
+      if (!nextRoomId) {
+        setRoomError("Could not determine room ID. Please try again.");
+        return;
+      }
+      setRoomId(nextRoomId);
+      setJoined(true);
+
+      if (data.state) {
+        setState(data.state);
+      }
+      if (data.queue) {
+        setQueue(data.queue);
+      }
+      if (data.users) {
+        setUsers(data.users);
+      }
+
+      const joinPayload = { roomId: nextRoomId, userId, username: cleanUsername };
+      const joinCallback = (response) => {
+        if (response?.error) {
+          console.error("DEBUG: join_room failed", response);
+          setRoomError(response.error || "Failed to join room via socket.");
+          return;
+        }
+        console.log("DEBUG: join_room ack", response);
+        setState(response.state || {});
+        setQueue(response.queue || []);
+        setUsers(response.users || []);
+      };
+
+      if (socket.connected) {
+        socket.emit("join_room", joinPayload, joinCallback);
+      } else {
+        pendingRoomJoin.current = { payload: joinPayload, callback: joinCallback };
+        console.log("DEBUG: Socket not connected yet, pending join_room set", joinPayload);
+      }
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      setRoomError(typeof detail === "string" ? detail : "Failed to connect to server. Check backend and try again.");
+    } finally {
+      setRoomLoading(false);
+    }
+  };
+
+  const handleCreate = (inputUsername, wantedRoomId) => enterRoom(createRoom, inputUsername, wantedRoomId, "create");
+  const handleJoin = (inputUsername, wantedRoomId) => enterRoom(joinRoom, inputUsername, wantedRoomId, "join");
+
+  const [connected, setConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
+  const pendingRoomJoin = useRef(null);
+
+  useEffect(() => {
+    console.log("DEBUG: Setting up socket listeners. Initial status:", socket.connected);
+    
+    if (socket.connected) {
+      setConnected(true);
+      setConnectionError("");
+    }
+
+    socket.on("connect", () => {
+      console.log("DEBUG: Socket 'connect' event. ID:", socket.id);
+      setConnected(true);
+      setConnectionError("");
+      if (pendingRoomJoin.current) {
+        console.log("DEBUG: Emitting pending join_room after socket connect", pendingRoomJoin.current.payload);
+        socket.emit("join_room", pendingRoomJoin.current.payload, (response) => {
+          pendingRoomJoin.current.callback?.(response);
+          pendingRoomJoin.current = null;
+        });
+      }
+    });
+
+    socket.on("connect_error", (err) => {
+      const msg = err?.message || err?.toString() || "Connection error";
+      console.error("DEBUG: Socket 'connect_error':", msg, err);
+      setConnected(false);
+      setConnectionError(msg);
+    });
+
+    socket.on("connect_timeout", () => {
+      setConnectionError("Connection timed out");
+      setConnected(false);
+    });
+
+    socket.on("error", (err) => {
+      console.error("DEBUG: Socket 'error':", err);
+      setConnectionError(err?.message || "Internal error");
+    });
+
+    socket.on("disconnect", (reason) => {
+      console.warn("DEBUG: Socket 'disconnect' event. Reason:", reason);
+      setConnected(false);
+      if (reason === "io server disconnect") {
+        setConnectionError("Server closed the connection");
+      } else if (reason === "transport close") {
+        setConnectionError("Lost connection to server");
+      } else {
+        setConnectionError(`Disconnected: ${reason}`);
+      }
+    });
+    
+    socket.on("room_state", (payload) => {
+      setState(payload.state || {});
+      setQueue(payload.queue || []);
+      setUsers(payload.users || []);
+      if (payload.syncTime && payload.state?.songId) {
+        socket.emit("sync_time", {
+          roomId: payload.roomId,
+          timestamp: payload.syncTime,
+          isPlaying: payload.state?.isPlaying,
+        });
+      }
+    });
+
+    socket.on("queue_updated", ({ queue: nextQueue }) => setQueue(nextQueue || []));
+    socket.on("user_joined", ({ user: joinedUser }) => {
+      if (!joinedUser) return;
+      setUsers((prev) => {
+        if (prev.some((entry) => entry.userId === joinedUser.userId)) return prev;
+        return [...prev, joinedUser];
+      });
+    });
+    socket.on("user_left", ({ users: nextUsers }) => setUsers(nextUsers || []));
+    socket.on("song_changed", ({ state: nextState, queue: nextQueue }) => {
+      setState(nextState || {});
+      if (nextQueue) setQueue(nextQueue);
+    });
+    socket.on("song_paused", ({ state: nextState }) => setState(nextState || {}));
+    socket.on("song_restarted", ({ state: nextState }) => setState(nextState || {}));
+    socket.on("host_changed", ({ hostId: nextHost }) => setState((prev) => ({ ...prev, hostId: nextHost })));
+    socket.on("kicked", ({ roomId: kickedRoomId }) => {
+      if (kickedRoomId && kickedRoomId !== roomId) return;
+      alert("You were removed from the room by host.");
+      setJoined(false);
+      setRoomId("");
+      setQueue([]);
+      setUsers([]);
+      setState({});
+    });
+
+    return () => {
+      socket.off("room_state");
+      socket.off("queue_updated");
+      socket.off("user_joined");
+      socket.off("user_left");
+      socket.off("song_changed");
+      socket.off("song_paused");
+      socket.off("song_restarted");
+      socket.off("host_changed");
+      socket.off("kicked");
+    };
+  }, [socket, roomId]);
+
+  const [searching, setSearching] = useState(false);
+  const [addingSongId, setAddingSongId] = useState("");
+  const [searchSource, setSearchSource] = useState("full"); // Default to full songs as requested
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    try {
+      const data = await searchMusic(searchQuery.trim(), searchSource);
+      setResults(data);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const addSong = (song, onAdded) => {
+    if (!roomId) {
+      alert("Room ID is missing. Please create or join a room before adding songs.");
+      return;
+    }
+
+    if (!song?.songId || addingSongId) return;
+    setAddingSongId(song.songId);
+    console.log(`DEBUG: Adding song to room ${roomId} via socket ${socket.id}`, song);
+    addSongToQueue(roomId, song)
+      .then((result) => {
+        if (Array.isArray(result?.queue)) {
+          setQueue(result.queue);
+        } else {
+          setQueue((prev) => [...prev, song]);
+        }
+
+        if (!state.songId && socket.connected) {
+          console.log("DEBUG: Triggering initial play");
+          socket.emit("play_song", { roomId, song, timestamp: 0 }, (response) => {
+            if (response?.error) {
+              console.error("DEBUG: play_song failed", response);
+            }
+          });
+        }
+
+        setResults([]);
+        onAdded();
+      })
+      .catch((error) => {
+        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+        alert(`Failed to add song: ${detail}`);
+      })
+      .finally(() => {
+        setAddingSongId("");
+      });
+  };
+
+  const playSelectedSong = (song) => {
+    if (!roomId || !song?.songId) return;
+    playSongInRoom(roomId, song, 0)
+      .catch((error) => {
+        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+        alert(`Failed to play song: ${detail}`);
+      });
+  };
+
+  const removeMember = (member) => {
+    if (!roomId || !member?.userId) return;
+    kickMember(roomId, userId, member.userId)
+      .then((response) => {
+        if (Array.isArray(response?.users)) {
+          setUsers(response.users);
+        }
+      })
+      .catch((error) => {
+        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+        alert(`Failed to remove member: ${detail}`);
+      });
+  };
+
+  const onSyncEmit = (timestamp, isPlaying) => {
+    if (!roomId) return;
+    socket.emit("sync_time", { roomId, timestamp, isPlaying });
+  };
+
+  const onPlaybackChange = (type, timestamp) => {
+    if (!roomId) return;
+    if (type === "play") {
+      if (!state.songId) return;
+      playSongInRoom(
+        roomId,
+        {
+          ...state,
+          durationSec: state.durationSec || 30,
+        },
+        timestamp
+      ).catch((error) => {
+        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+        console.error("Play failed:", detail);
+      });
+    } else {
+      pauseSongInRoom(roomId, timestamp).catch((error) => {
+        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+        console.error("Pause failed:", detail);
+      });
+    }
+  };
+
+  const playerRef = useRef(null);
+
+  const handleTogglePlay = () => {
+    if (!roomId) return;
+    
+    // If no song is loaded but we have a queue, play the first song
+    if (!state.songId && queue.length > 0) {
+      playSelectedSong(queue[0]);
+      return;
+    }
+
+    if (!state.songId) return;
+
+    const nextIsPlaying = !state.isPlaying;
+    
+    // Optimistic UI update
+    setState(prev => ({ ...prev, isPlaying: nextIsPlaying }));
+
+    if (nextIsPlaying) {
+      playerRef.current?.play();
+    } else {
+      playerRef.current?.pause();
+    }
+  };
+
+  if (!joined) {
+    return <Room onCreate={handleCreate} onJoin={handleJoin} loading={roomLoading} error={roomError} />;
+  }
+
+  return (
+    <div className="app">
+      <header>
+        <div className="row align-center">
+          <div className="row align-center">
+            <h2>Room: {roomId}</h2>
+            <span className={`status-dot ${connected ? "online" : "offline"}`} title={connected ? "Connected" : "Disconnected"}></span>
+            {connectionError && <small className="error-text" style={{ marginLeft: "10px" }}>{connectionError}</small>}
+            {!connected && !connectionError && <small className="muted" style={{ marginLeft: "10px" }}>Connecting to backend...</small>}
+          </div>
+        </div>
+        <div className="chip">{username}</div>
+      </header>
+      <main>
+        <section className="left">
+          <Player
+            ref={playerRef}
+            socket={socket}
+            roomId={roomId}
+            song={state}
+            onSyncEmit={onSyncEmit}
+            onPlaybackChange={onPlaybackChange}
+          />
+        </section>
+        <section className="right">
+          <Users users={users} hostId={hostId} currentUserId={userId} onRemoveMember={removeMember} />
+          <Queue
+            queue={queue}
+            currentSongId={state.songId}
+            onPlaySong={playSelectedSong}
+            onSearch={(close) => (
+              <div className="search-container">
+                <div className="source-toggle row">
+                  <button 
+                    className={searchSource === "preview" ? "active" : ""} 
+                    onClick={() => setSearchSource("preview")}
+                  >
+                    Short Previews
+                  </button>
+                  <button 
+                    className={searchSource === "full" ? "active" : ""} 
+                    onClick={() => setSearchSource("full")}
+                  >
+                    Full Songs (YouTube)
+                  </button>
+                </div>
+                <div className="search-input-group row">
+                  <input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                    placeholder={searchSource === "full" ? "Search full songs (YouTube)..." : "Search previews (Deezer)..."}
+                  />
+                  <button onClick={handleSearch} disabled={searching} className="primary-btn">
+                    {searching ? "..." : "Search"}
+                  </button>
+                </div>
+                <div className="results">
+                  {results.length === 0 && searchQuery && !searching && (
+                    <div className="muted" style={{ padding: "20px", textAlign: "center", background: "#111", borderRadius: "10px" }}>
+                      <p>No results found in <b>{searchSource === "full" ? "YouTube" : "Previews"}</b>.</p>
+                      <button 
+                        className="secondary" 
+                        style={{ marginTop: "10px" }}
+                        onClick={() => {
+                          setSearchSource(searchSource === "full" ? "preview" : "full");
+                          setTimeout(handleSearch, 100);
+                        }}
+                      >
+                        Try searching in {searchSource === "full" ? "Previews" : "Full Songs"}
+                      </button>
+                    </div>
+                  )}
+                  {results.map((song) => (
+                    <div key={song.songId} className="result-item">
+                      <img src={song.thumbnail} alt={song.title} />
+                      <div style={{ flex: 1 }}>
+                        <div className="song-title">{song.title}</div>
+                        <small className="muted">{song.artist}</small>
+                      </div>
+                      <button disabled={Boolean(addingSongId)} onClick={() => addSong(song, close)}>
+                        {addingSongId === song.songId ? "Adding..." : "Add"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          />
+        </section>
+      </main>
+      <footer className="player-bar">
+        <button
+          className="control-btn secondary"
+          onClick={() =>
+            prevSongInRoom(roomId).catch((error) => {
+              const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+              alert(`Prev failed: ${detail}`);
+            })
+          }
+        >
+          Prev
+        </button>
+        <button
+          className={`control-btn play-pause-btn ${state.isPlaying ? "playing" : ""}`}
+          onClick={handleTogglePlay}
+          disabled={!state.songId && queue.length === 0}
+        >
+          {state.isPlaying ? "Pause" : "Play"}
+        </button>
+        <button
+          className="control-btn secondary"
+          onClick={() =>
+            nextSongInRoom(roomId).catch((error) => {
+              const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+              alert(`Next failed: ${detail}`);
+            })
+          }
+        >
+          Next
+        </button>
+      </footer>
+    </div>
+  );
+};
+
+export default App;
+
+
+
+================================================================================
+FILE: frontend/src/main.jsx
+================================================================================
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App";
+import "./styles.css";
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+
+
+================================================================================
+FILE: frontend/src/styles.css
+================================================================================
+:root {
+  font-family: "Outfit", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f2f2f2;
+  background: #0a0a0a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0a0a0a;
+}
+
+.app {
+  min-height: 100vh;
+  padding: 20px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.card {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.player-card {
+  min-height: 430px;
+}
+
+.now-playing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #111;
+  border: 1px solid #292929;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 14px;
+}
+
+.audio-player {
+  width: 100%;
+  border-radius: 10px;
+}
+
+.queue-list,
+.users-list,
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.queue-item,
+.user-item,
+.result-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #111;
+  border-radius: 10px;
+  padding: 8px;
+}
+
+img {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #00ff87;
+  color: #0a0a0a;
+  font-weight: 700;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: #00ff87;
+  color: #0a0a0a;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #2d2d2d;
+  color: #fff;
+}
+
+input {
+  width: 100%;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #333;
+  background: #111;
+  color: #fff;
+}
+
+.landing {
+  max-width: 420px;
+  margin: 80px auto;
+  background: #1a1a1a;
+  padding: 22px;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.user-row {
+  margin-top: 0;
+  align-items: center;
+}
+
+.remove-btn {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.space-between {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.chip {
+  background: #00ff8722;
+  border: 1px solid #00ff87;
+  color: #00ff87;
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-left: 10px;
+}
+
+.status-dot.online {
+  background: #00ff87;
+  box-shadow: 0 0 8px #00ff87;
+}
+
+.status-dot.offline {
+  background: #ff4141;
+  box-shadow: 0 0 8px #ff4141;
+}
+
+.align-center {
+  align-items: center;
+}
+
+.search-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.source-toggle {
+  background: #111;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid #222;
+}
+
+.source-toggle button {
+  flex: 1;
+  background: transparent;
+  color: #888;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.source-toggle button.active {
+  background: #2d2d2d;
+  color: #00ff87;
+}
+
+.search-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.primary-btn {
+  background: #00ff87;
+  color: #0a0a0a;
+  padding: 10px 20px;
+}
+
+.player-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 24px;
+  background: rgba(22, 22, 22, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  padding: 12px 24px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  width: auto;
+  min-width: 300px;
+}
+
+.control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 10px 20px;
+  font-size: 0.95rem;
+}
+
+.control-btn:active {
+  transform: scale(0.92);
+}
+
+.play-pause-btn {
+  background: linear-gradient(135deg, #00ff87, #60efff);
+  color: #0a0a0a;
+  padding: 12px 30px;
+  font-size: 1.1rem;
+  border-radius: 14px;
+  box-shadow: 0 0 20px rgba(0, 255, 135, 0.3);
+}
+
+.play-pause-btn.playing {
+  background: linear-gradient(135deg, #ff4b2b, #ff416c);
+  color: #fff;
+  box-shadow: 0 0 20px rgba(255, 75, 43, 0.3);
+}
+
+.play-pause-btn:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+}
+
+.control-btn.secondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ccc;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.control-btn.secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.search-modal {
+  margin-top: 10px;
+  background: #141414;
+  border: 1px solid #2b2b2b;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.close {
+  float: right;
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.hidden {
+  display: none;
+}
+
+.muted {
+  color: #9f9f9f;
+}
+
+.error-text {
+  color: #ff7171;
+  margin: 10px 0 0;
+}
+
+@media (max-width: 1000px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+
+================================================================================
+FILE: frontend/src/hooks/useSocket.js
+================================================================================
+import { useEffect, useMemo } from "react";
+import { io } from "socket.io-client";
+
+export const useSocket = () => {
+  const socket = useMemo(() => {
+    const isProd = typeof window !== "undefined" && !window.location.hostname.includes("localhost") && !window.location.hostname.includes("127.0.0.1");
+    
+    let url = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_BACKEND_URL;
+    
+    if (!url) {
+      const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
+      // Only default to port 8000 if we are clearly on localhost
+      if (hostname.includes("localhost") || hostname.includes("127.0.0.1")) {
+        url = `http://${hostname}:8000`;
+      } else {
+        // In production, if variables are missing, we try to guess the Render URL or at least warn
+        console.error("VITE_SOCKET_URL/VITE_BACKEND_URL is missing in production environment variables!");
+        url = window.location.origin.replace("vercel.app", "onrender.com"); // Hail mary guess for Render common pattern
+      }
+    }
+    
+    // Ensure URL has a protocol
+    if (url && !url.startsWith("http")) {
+      url = `${window.location.protocol}//${url}`;
+    }
+
+    console.log(`Connecting to socket at: ${url} (Origin: ${window.location.origin})`);
+    
+    return io(url, {
+      autoConnect: true,
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      withCredentials: true,
+    });
+  }, []);
+
+  useEffect(() => {
+    socket.on("connect", () => console.log("Socket connected:", socket.id));
+    socket.on("connect_error", (err) => console.error("Socket connection error:", err.message));
+    
+    // We don't disconnect on cleanup because useMemo keeps the socket object stable
+    // and we want it to survive React's double-mounting in development.
+    return () => {
+      socket.off("connect");
+      socket.off("connect_error");
+    };
+  }, [socket]);
+
+  return socket;
+};
+
+
+
+================================================================================
+FILE: frontend/src/components/Player.jsx
+================================================================================
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { resolveSong } from "../services/api";
+
+const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange }, ref) => {
+  const audioRef = useRef(null);
+  const suppressEmitRef = useRef(false);
+  const [resolving, setResolving] = useState(false);
+  const [error, setError] = useState("");
+  const [streamUrl, setStreamUrl] = useState("");
+
+  useImperativeHandle(ref, () => ({
+    play: () => {
+      if (audioRef.current) {
+        audioRef.current.play().catch((e) => console.warn("Manual play failed:", e));
+      }
+    },
+    pause: () => {
+      audioRef.current?.pause();
+    },
+    get audio() {
+      return audioRef.current;
+    }
+  }));
+
+  // Handle song changes and initial state
+  useEffect(() => {
+    if (!audioRef.current || !song?.songId) return;
+    const audio = audioRef.current;
+
+    const applySource = async () => {
+      let finalUrl = song.previewUrl;
+      
+      // If song is from YouTube and needs resolution
+      if (song.source === "youtube" && !song.previewUrl) {
+        setResolving(true);
+        setError("");
+        try {
+          finalUrl = await resolveSong(song.songId);
+          if (!finalUrl) throw new Error("YouTube blocked the stream resolution.");
+        } catch (error) {
+          console.error("Resolution failed", error);
+          setError("YouTube blocked the request. Try a 'Short Preview' version of this song.");
+          setResolving(false);
+          return;
+        } finally {
+          setResolving(false);
+        }
+      }
+
+      if (!finalUrl || !audio) return;
+
+      if (audio.src !== finalUrl) {
+        console.log("DEBUG: Setting new source", finalUrl);
+        setStreamUrl(finalUrl);
+        suppressEmitRef.current = true;
+        audio.src = finalUrl;
+        audio.currentTime = Number(song.timestamp || 0);
+        
+        if (song.isPlaying) {
+          audio.play().catch((e) => console.warn("Auto-play blocked:", e));
+        } else {
+          audio.pause();
+        }
+        
+        setTimeout(() => {
+          suppressEmitRef.current = false;
+        }, 1000); // Increased suppression to allow for buffer/load
+      } else {
+        // Source is same, check if we need to sync play/pause status
+        const diff = Math.abs(audio.currentTime - Number(song.timestamp || 0));
+        
+        if (diff > 2.0) { // Increased threshold for drift
+          console.log(`DEBUG: Drifting by ${diff}s, syncing...`);
+          suppressEmitRef.current = true;
+          audio.currentTime = Number(song.timestamp || 0);
+          setTimeout(() => suppressEmitRef.current = false, 500);
+        }
+        
+        if (song.isPlaying && audio.paused) {
+          audio.play().catch(() => {});
+        } else if (!song.isPlaying && !audio.paused) {
+          audio.pause();
+        }
+      }
+    };
+
+    applySource();
+  }, [song?.songId, song?.previewUrl, song?.isPlaying, song?.timestamp, song?.source]);
+
+  // Handle local user actions
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handlePlay = () => {
+      if (suppressEmitRef.current) return;
+      onPlaybackChange("play", audio.currentTime);
+    };
+
+    const handlePause = () => {
+      if (suppressEmitRef.current) return;
+      onPlaybackChange("pause", audio.currentTime);
+    };
+
+    audio.addEventListener("play", handlePlay);
+    audio.addEventListener("pause", handlePause);
+
+    return () => {
+      audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("pause", handlePause);
+    };
+  }, [onPlaybackChange]);
+
+  // Periodic position report (heartbeat)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const audio = audioRef.current;
+      if (!audio || !roomId || suppressEmitRef.current) return;
+      
+      const timestamp = audio.currentTime || 0;
+      const isPlaying = !audio.paused;
+      
+      onSyncEmit(timestamp, isPlaying);
+    }, 5000); // Send heartbeat every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [roomId, onSyncEmit]);
+
+  // Listen for sync events from other clients
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleSync = ({ timestamp, isPlaying }) => {
+      const audio = audioRef.current;
+      if (!audio || suppressEmitRef.current) return;
+
+      const current = audio.currentTime || 0;
+      const diff = Math.abs(current - timestamp);
+
+      // Only force sync if the drift is significant (> 1s)
+      if (diff > 1.2) {
+        console.log(`Syncing time: drift of ${diff.toFixed(2)}s detected.`);
+        suppressEmitRef.current = true;
+        audio.currentTime = timestamp;
+        
+        if (isPlaying && audio.paused) {
+          audio.play().catch(() => {});
+        } else if (!isPlaying && !audio.paused) {
+          audio.pause();
+        }
+        
+        setTimeout(() => {
+          suppressEmitRef.current = false;
+        }, 300);
+      }
+    };
+
+    socket.on("sync_time", handleSync);
+
+    return () => {
+      socket.off("sync_time", handleSync);
+    };
+  }, [socket]);
+
+  return (
+    <div className="card player-card">
+      <h3>Now Playing</h3>
+      {resolving && (
+        <div className="resolving-overlay">
+          <p className="loading-text">Extracting audio from YouTube...</p>
+        </div>
+      )}
+      {error && (
+        <div className="error-overlay" style={{ background: "rgba(255,0,0,0.1)", padding: "10px", borderRadius: "8px", marginBottom: "10px", border: "1px solid rgba(255,0,0,0.3)" }}>
+          <p style={{ color: "#ff4444", fontSize: "0.9rem", margin: 0 }}>⚠️ {error}</p>
+        </div>
+      )}
+      {song?.songId ? (
+        <div>
+          <div className="now-playing">
+            <img src={song.thumbnail} alt={song.title} />
+            <div>
+              <div className="song-title">{song.title}</div>
+              <small className="song-artist">{song.artist}</small>
+            </div>
+            <small className="song-duration">{song.duration}</small>
+          </div>
+          <audio ref={audioRef} controls className="audio-player" />
+        </div>
+      ) : (
+        <p className="muted">Add a song to start listening together.</p>
+      )}
+    </div>
+  );
+});
+
+Player.displayName = "Player";
+
+export default Player;
+
+
+
+
+================================================================================
+FILE: frontend/src/components/Queue.jsx
+================================================================================
+import { useState } from "react";
+
+const Queue = ({ queue = [], onSearch, onPlaySong, currentSongId }) => {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="card queue-card">
+      <div className="row space-between">
+        <h3>Queue</h3>
+        <button onClick={() => setOpen(!open)}>Add Song</button>
+      </div>
+      <div className="queue-list">
+        {queue.length === 0 ? (
+          <p className="muted">No songs queued yet.</p>
+        ) : (
+          queue.map((song, index) => (
+            <div key={`${song.songId}-${index}`} className="queue-item">
+              <img src={song.thumbnail} alt={song.title} />
+              <div>
+                <div>{song.title}</div>
+                <small>{song.artist}</small>
+              </div>
+              <div className="row">
+                <small>{song.duration}</small>
+                <button
+                  className="secondary"
+                  disabled={currentSongId === song.songId}
+                  onClick={() => onPlaySong?.(song)}
+                >
+                  {currentSongId === song.songId ? "Playing" : "Play"}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      {open && (
+        <div className="search-modal">
+          <button className="close" onClick={() => setOpen(false)}>
+            x
+          </button>
+          {onSearch(() => setOpen(false))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Queue;
+
+
+
+================================================================================
+FILE: frontend/src/components/Room.jsx
+================================================================================
+import { useState } from "react";
+
+const Room = ({ onCreate, onJoin, loading = false, error = "" }) => {
+  const [username, setUsername] = useState("");
+  const [roomId, setRoomId] = useState("");
+
+  return (
+    <div className="landing">
+      <h1>Music Sync</h1>
+      <p>Listen together in real time.</p>
+      <input
+        placeholder="Your username"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+      />
+      <input placeholder="Room ID (for join)" value={roomId} onChange={(e) => setRoomId(e.target.value)} />
+      {error ? <p className="error-text">{error}</p> : null}
+      <div className="row">
+        <button disabled={loading} onClick={() => onCreate(username, roomId)}>
+          {loading ? "Please wait..." : "Create Room"}
+        </button>
+        <button className="secondary" disabled={loading} onClick={() => onJoin(username, roomId)}>
+          {loading ? "Please wait..." : "Join Room"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default Room;
+
+
+
+================================================================================
+FILE: frontend/src/components/Users.jsx
+================================================================================
+const Users = ({ users = [], hostId, currentUserId, onRemoveMember }) => {
+  return (
+    <div className="card users-card">
+      <h3>Connected Users</h3>
+      <div className="users-list">
+        {users.map((user) => (
+          <div key={user.userId} className="user-item">
+            <div className="row user-row">
+              <div className="avatar">{user.username?.slice(0, 1)?.toUpperCase() || "G"}</div>
+              <span>
+                {user.username} {hostId === user.userId ? "(Host)" : ""}
+              </span>
+            </div>
+            {hostId === currentUserId && user.userId !== currentUserId ? (
+              <button className="secondary remove-btn" onClick={() => onRemoveMember?.(user)}>
+                Remove
+              </button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+export default Users;
+
+
+
+================================================================================
+FILE: frontend/src/services/api.js
+================================================================================
+import axios from "axios";
+
+const getBaseURL = () => {
+  let url = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_SOCKET_URL;
+  if (!url) {
+    const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
+    if (hostname.includes("localhost") || hostname.includes("127.0.0.1")) {
+      return "http://localhost:8000";
+    }
+    // Guess Render URL or fallback to current origin (unlikely to work but better than localhost)
+    return window.location.origin.replace("vercel.app", "onrender.com");
+  }
+  return url.startsWith("http") ? url : `${window.location.protocol}//${url}`;
+};
+
+const baseURL = getBaseURL();
+
+export const api = axios.create({
+  baseURL,
+  timeout: 30000, // YouTube extraction can be slow
+});
+
+// Global error interceptor
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const detail = error.response?.data?.detail || error.message;
+    console.error(`API Error (${error.config?.url}):`, detail);
+    return Promise.reject(error);
+  }
+);
+
+export const createRoom = async ({ roomId, userId, username }) => {
+  const { data } = await api.post("/api/rooms/create", { roomId, userId, username });
+  return data;
+};
+
+export const joinRoom = async ({ roomId, userId, username }) => {
+  const { data } = await api.post("/api/rooms/join", { roomId, userId, username });
+  return data;
+};
+
+export const addSongToQueue = async (roomId, song) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/queue`, { song });
+  return data;
+};
+
+export const playSongInRoom = async (roomId, song, timestamp = 0) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/play`, { song, timestamp });
+  return data;
+};
+
+export const pauseSongInRoom = async (roomId, timestamp = 0) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/pause`, { timestamp });
+  return data;
+};
+
+export const nextSongInRoom = async (roomId) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/next`);
+  return data;
+};
+
+export const prevSongInRoom = async (roomId) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/prev`);
+  return data;
+};
+
+export const kickMember = async (roomId, byUserId, targetUserId) => {
+  const { data } = await api.post(`/api/rooms/${roomId}/kick`, { byUserId, targetUserId });
+  return data;
+};
+
+export const searchMusic = async (q, source = "preview") => {
+  try {
+    const { data } = await api.get("/api/search", { params: { q, limit: 12, source } });
+    return data.results || [];
+  } catch (error) {
+    return [];
+  }
+};
+
+export const resolveSong = async (songId) => {
+  // songId format is typically "yt-VIDEOID"
+  const videoId = songId.startsWith("yt-") ? songId.replace("yt-", "") : songId;
+  const { data } = await api.get(`/api/resolve/${videoId}`);
+  return data.url;
+};
+
+
+
+================================================================================
+FILE: backend/requirements.txt
+================================================================================
+fastapi
+uvicorn
+python-socketio
+python-dotenv
+redis
+motor
+pydantic
+httpx
+yt-dlp
+ytmusicapi
+
+
+
+================================================================================
+FILE: backend/app/__init__.py
+================================================================================
+# Music Sync backend package.
+
+
+
+================================================================================
+FILE: backend/app/main.py
+================================================================================
+import os
+
+import socketio
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.routes.resolve import router as resolve_router
+from app.routes.room import router as room_router
+from app.routes.search import router as search_router
+from app.socket_manager import sio
+
+load_dotenv()
+
+fastapi_app = FastAPI(title="Music Sync API")
+
+# Use environment variables for CORS in production
+cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+if not cors_origins_raw:
+    print("WARNING: CORS_ORIGINS not set. Defaulting to localhost.")
+    allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173"]
+    allow_credentials = True
+elif cors_origins_raw == "*":
+    allowed_origins = ["*"]
+    allow_credentials = False
+else:
+    allowed_origins = [origin.strip().rstrip("/") for origin in cors_origins_raw.split(",") if origin.strip()]
+    allow_credentials = True
+
+print(f"INFO: API Allowed Origins: {allowed_origins}")
+
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+fastapi_app.include_router(search_router)
+fastapi_app.include_router(room_router)
+fastapi_app.include_router(resolve_router)
+
+
+@fastapi_app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+socket_app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app)
+# Keep backward compatibility for `uvicorn app.main:app`
+app = socket_app
+
+
+
+================================================================================
+FILE: backend/app/socket_manager.py
+================================================================================
+import os
+import time
+from typing import Any
+
+import socketio
+
+from app.services import mongo_service, redis_service
+
+cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+if not cors_origins_raw:
+    allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://localhost:5174"]
+elif cors_origins_raw == "*":
+    allowed_origins = "*"
+else:
+    allowed_origins = [origin.strip().rstrip("/") for origin in cors_origins_raw.split(",") if origin.strip()]
+
+print(f"INFO: Socket Allowed Origins: {allowed_origins}")
+
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins=allowed_origins,
+)
+user_sid_map: dict[str, str] = {}
+
+
+def _compute_sync_time(state: dict[str, Any]) -> float:
+    timestamp = float(state.get("timestamp", 0.0))
+    if not state.get("isPlaying") or state.get("startedAt") is None:
+        return timestamp
+    return timestamp + max(0.0, (time.time() - float(state["startedAt"])))
+
+
+@sio.event
+async def connect(sid, environ, auth):
+    await sio.emit("connected", {"sid": sid}, room=sid)
+
+
+@sio.event
+async def disconnect(sid):
+    disconnected_user_ids = [user_id for user_id, mapped_sid in user_sid_map.items() if mapped_sid == sid]
+    for user_id in disconnected_user_ids:
+        user_sid_map.pop(user_id, None)
+    return
+
+
+@sio.on("join_room")
+async def join_room(sid, data):
+    room_id = data.get("roomId")
+    user_id = data.get("userId")
+    username = data.get("username")
+
+    if not room_id or not user_id or not username:
+        return {"success": False, "error": "Missing roomId, userId, or username"}
+
+    await sio.enter_room(sid, room_id)
+    user_sid_map[user_id] = sid
+    await redis_service.add_user(room_id, user_id, username)
+    await mongo_service.upsert_user(user_id, username)
+
+    state = await redis_service.get_room_state(room_id)
+    if not state:
+        await redis_service.create_room(room_id, user_id)
+        state = await redis_service.get_room_state(room_id)
+
+    queue = await redis_service.get_queue(room_id)
+    users = await redis_service.get_users(room_id)
+    current_time = _compute_sync_time(state or {})
+
+    await sio.emit(
+        "room_state",
+        {
+            "roomId": room_id,
+            "state": state,
+            "queue": queue,
+            "users": users,
+            "syncTime": current_time,
+        },
+        room=sid,
+    )
+    await sio.emit("user_joined", {"roomId": room_id, "user": {"userId": user_id, "username": username}}, room=room_id)
+    return {"success": True, "roomId": room_id, "state": state, "queue": queue, "users": users}
+
+
+@sio.on("leave_room")
+async def leave_room(sid, data):
+    room_id = data["roomId"]
+    user_id = data["userId"]
+
+    await sio.leave_room(sid, room_id)
+    user_sid_map.pop(user_id, None)
+    await redis_service.remove_user(room_id, user_id)
+
+    users = await redis_service.get_users(room_id)
+    state = await redis_service.get_room_state(room_id) or {}
+
+    if state.get("hostId") == user_id and users:
+        state["hostId"] = users[0]["userId"]
+        await redis_service.set_room_state(room_id, state)
+        await sio.emit("host_changed", {"roomId": room_id, "hostId": state["hostId"]}, room=room_id)
+
+    await sio.emit("user_left", {"roomId": room_id, "userId": user_id, "users": users}, room=room_id)
+    await redis_service.clear_room_if_empty(room_id, ttl_seconds=3600)
+
+
+@sio.on("kick_user")
+async def kick_user(sid, data):
+    room_id = data.get("roomId")
+    target_user_id = data.get("targetUserId")
+    by_user_id = data.get("byUserId")
+
+    if not room_id or not target_user_id or not by_user_id:
+        return {"success": False, "error": "Missing roomId, targetUserId, or byUserId"}
+
+    state = await redis_service.get_room_state(room_id) or {}
+    if state.get("hostId") != by_user_id:
+        return {"success": False, "error": "Only host can remove members"}
+    if target_user_id == by_user_id:
+        return {"success": False, "error": "Host cannot remove themselves"}
+
+    await redis_service.remove_user(room_id, target_user_id)
+    target_sid = user_sid_map.pop(target_user_id, None)
+    if target_sid:
+        await sio.leave_room(target_sid, room_id)
+        await sio.emit("kicked", {"roomId": room_id}, room=target_sid)
+
+    users = await redis_service.get_users(room_id)
+    await sio.emit("user_left", {"roomId": room_id, "userId": target_user_id, "users": users}, room=room_id)
+    return {"success": True, "users": users}
+
+
+@sio.on("play_song")
+async def play_song(sid, data):
+    room_id = data.get("roomId")
+    song = data.get("song")
+    print(f"DEBUG: play_song [START] room: {room_id}, song: {song.get('title') if song else 'None'}")
+    if not room_id or not song:
+        return {"success": False, "error": "Missing roomId or song"}
+    
+    timestamp = float(data.get("timestamp", 0.0))
+    state = await redis_service.get_room_state(room_id) or {}
+    
+    current_song = state.get("songId")
+    if current_song and current_song != song.get("songId"):
+        await redis_service.push_history(
+            room_id,
+            {
+                "songId": current_song,
+                "previewUrl": state.get("previewUrl", ""),
+                "title": state.get("title", "Previously played"),
+                "artist": state.get("artist", "Unknown Artist"),
+                "thumbnail": state.get("thumbnail", ""),
+                "duration": state.get("duration", "0:30"),
+                "durationSec": int(data.get("currentDurationSec", 30)),
+            },
+        )
+
+    state.update(
+        {
+            "songId": song["songId"],
+            "previewUrl": song.get("previewUrl", ""),
+            "title": song["title"],
+            "artist": song["artist"],
+            "thumbnail": song["thumbnail"],
+            "duration": song["duration"],
+            "durationSec": song.get("durationSec", 30),
+            "source": song.get("source", "preview"),
+            "timestamp": timestamp,
+            "isPlaying": True,
+            "startedAt": time.time(),
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("song_changed", {"roomId": room_id, "state": state}, room=room_id)
+    print("DEBUG: play_song [EMIT_SUCCESS]")
+    return {"success": True}
+
+
+@sio.on("pause_song")
+async def pause_song(sid, data):
+    room_id = data["roomId"]
+    timestamp = float(data.get("timestamp", 0.0))
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update({"timestamp": timestamp, "isPlaying": False, "startedAt": None})
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("song_paused", {"roomId": room_id, "state": state}, room=room_id)
+
+
+@sio.on("sync_time")
+async def sync_time(sid, data):
+    room_id = data["roomId"]
+    timestamp = float(data.get("timestamp", 0.0))
+    is_playing = bool(data.get("isPlaying", False))
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update(
+        {
+            "timestamp": timestamp,
+            "isPlaying": is_playing,
+            "startedAt": time.time() if is_playing else None,
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("sync_time", {"roomId": room_id, "timestamp": timestamp, "isPlaying": is_playing}, room=room_id, skip_sid=sid)
+
+
+@sio.on("add_to_queue")
+async def add_to_queue(sid, data):
+    room_id = data.get("roomId")
+    song = data.get("song")
+    song_title = song.get("title", "Unknown") if isinstance(song, dict) else "Unknown"
+    print(f"DEBUG: add_to_queue [START] room: {room_id}, song: {song_title}")
+    if not room_id or not song:
+        print("DEBUG: add_to_queue [ERROR] Missing roomId or song")
+        return {"success": False, "error": "Missing roomId or song"}
+
+    try:
+        await redis_service.add_to_queue(room_id, song)
+        print("DEBUG: add_to_queue [REDIS_WRITE_SUCCESS]")
+        queue = await redis_service.get_queue(room_id)
+        print(f"DEBUG: add_to_queue [REDIS_READ_SUCCESS] Queue size: {len(queue)}")
+        await sio.emit("queue_updated", {"roomId": room_id, "queue": queue}, room=room_id)
+        print("DEBUG: add_to_queue [EMIT_SUCCESS]")
+        return {"success": True, "queue": queue}
+    except Exception as e:
+        print(f"DEBUG: add_to_queue [EXCEPTION]: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@sio.on("next_song")
+async def next_song(sid, data):
+    room_id = data["roomId"]
+    current_state = await redis_service.get_room_state(room_id) or {}
+    if current_state.get("songId"):
+        await redis_service.push_history(
+            room_id,
+            {
+                "songId": current_state["songId"],
+                "previewUrl": current_state.get("previewUrl", ""),
+                "title": current_state.get("title", "Previously played"),
+                "artist": current_state.get("artist", "Unknown Artist"),
+                "thumbnail": current_state.get("thumbnail", ""),
+                "duration": current_state.get("duration", "0:30"),
+                "durationSec": int(data.get("currentDurationSec", 30)),
+            },
+        )
+
+    song = await redis_service.pop_next_song(room_id)
+    if not song:
+        await sio.emit("queue_empty", {"roomId": room_id}, room=room_id)
+        return
+
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update(
+        {
+            "songId": song["songId"],
+            "previewUrl": song["previewUrl"],
+            "title": song["title"],
+            "artist": song["artist"],
+            "thumbnail": song["thumbnail"],
+            "duration": song["duration"],
+            "timestamp": 0.0,
+            "isPlaying": True,
+            "startedAt": time.time(),
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    queue = await redis_service.get_queue(room_id)
+    await sio.emit("song_changed", {"roomId": room_id, "state": state, "song": song, "queue": queue}, room=room_id)
+
+
+@sio.on("prev_song")
+async def prev_song(sid, data):
+    room_id = data["roomId"]
+    previous_song = await redis_service.pop_history(room_id)
+    if not previous_song:
+        await sio.emit("queue_empty", {"roomId": room_id}, room=room_id)
+        return
+
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update(
+        {
+            "songId": previous_song["songId"],
+            "previewUrl": previous_song["previewUrl"],
+            "title": previous_song["title"],
+            "artist": previous_song["artist"],
+            "thumbnail": previous_song["thumbnail"],
+            "duration": previous_song["duration"],
+            "timestamp": 0.0,
+            "startedAt": time.time(),
+            "isPlaying": True,
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("song_restarted", {"roomId": room_id, "state": state, "song": previous_song}, room=room_id)
+
+
+
+================================================================================
+FILE: backend/app/models/__init__.py
+================================================================================
+# Data models package.
+
+
+
+================================================================================
+FILE: backend/app/models/schemas.py
+================================================================================
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class Song(BaseModel):
+    songId: str
+    title: str
+    artist: str
+    thumbnail: str
+    duration: str
+    durationSec: int = 30
+    previewUrl: str
+
+
+class RoomState(BaseModel):
+    roomId: str
+    songId: Optional[str] = None
+    previewUrl: Optional[str] = None
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    thumbnail: Optional[str] = None
+    duration: Optional[str] = None
+    timestamp: float = 0.0
+    isPlaying: bool = False
+    startedAt: Optional[float] = None
+    hostId: Optional[str] = None
+
+
+class UserPresence(BaseModel):
+    userId: str
+    username: str
+
+
+class RoomDetails(BaseModel):
+    state: RoomState
+    queue: List[Song] = Field(default_factory=list)
+    users: List[UserPresence] = Field(default_factory=list)
+
+
+class CreateRoomRequest(BaseModel):
+    roomId: Optional[str] = ""
+    userId: str
+    username: str
+
+
+class JoinRoomRequest(BaseModel):
+    roomId: str
+    userId: str
+    username: str
+
+
+
+================================================================================
+FILE: backend/app/services/__init__.py
+================================================================================
+from .mongo_service import MongoService
+from .redis_service import RedisService
+from .youtube_service import YouTubeService
+
+# Shared service instances
+redis_service = RedisService()
+mongo_service = MongoService()
+youtube_service = YouTubeService()
+
+
+
+================================================================================
+FILE: backend/app/services/mongo_service.py
+================================================================================
+import os
+
+from motor.motor_asyncio import AsyncIOMotorClient
+
+
+class MongoService:
+    def __init__(self) -> None:
+        self.uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/musicsync")
+        try:
+            # Keep Mongo optional in local/dev runs: fail fast if unavailable.
+            self.client = AsyncIOMotorClient(
+                self.uri,
+                serverSelectionTimeoutMS=1000,
+                connectTimeoutMS=1000,
+                socketTimeoutMS=1000,
+            )
+            self.db = self.client.get_default_database()
+        except Exception as e:
+            print(f"Error connecting to MongoDB: {e}")
+            self.client = None
+            self.db = None
+
+    async def ping(self) -> bool:
+        if self.client is None:
+            return False
+        try:
+            # The admin command 'ping' is a common way to test connection
+            await self.client.admin.command("ping")
+            return True
+        except Exception:
+            return False
+
+    async def upsert_user(self, user_id: str, username: str) -> None:
+        if self.db is None:
+            return
+        try:
+            await self.db.users.update_one(
+                {"userId": user_id},
+                {"$set": {"userId": user_id, "username": username}},
+                upsert=True,
+            )
+        except Exception as e:
+            print(f"Error upserting user to Mongo: {e}")
+
+
+
+================================================================================
+FILE: backend/app/services/music.py
+================================================================================
+from typing import Any
+import httpx
+
+
+class MusicService:
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        minutes = seconds // 60
+        remaining = seconds % 60
+        return f"{minutes}:{remaining:02d}"
+
+    async def search_songs(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """
+        Search songs using Deezer as primary and iTunes as fallback.
+        """
+        songs = await self._search_deezer(query, limit)
+        if not songs:
+            print(f"No Deezer results for '{query}', trying iTunes fallback...")
+            songs = await self._search_itunes(query, limit)
+        
+        return songs
+
+    async def _search_deezer(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        url = "https://api.deezer.com/search"
+        params = {"q": query}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+
+            rows = payload.get("data", [])[:limit]
+            songs: list[dict] = []
+            for item in rows:
+                preview_url = item.get("preview")
+                if not preview_url:
+                    continue
+
+                duration_seconds = int(item.get("duration", 30))
+                song_id = str(item.get("id", ""))
+                if not song_id:
+                    continue
+                album = item.get("album", {}) or {}
+                artist = item.get("artist", {}) or {}
+
+                songs.append(
+                    {
+                        "songId": f"dz-{song_id}",
+                        "title": item.get("title", "Unknown Title"),
+                        "artist": artist.get("name", "Unknown Artist"),
+                        "thumbnail": album.get("cover_medium", ""),
+                        "duration": self._format_duration(duration_seconds),
+                        "durationSec": duration_seconds,
+                        "previewUrl": preview_url,
+                        "source": "deezer"
+                    }
+                )
+            return songs
+        except Exception as e:
+            print(f"Deezer search error: {e}")
+            return []
+
+    async def _search_itunes(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        url = "https://itunes.apple.com/search"
+        params = {
+            "term": query,
+            "entity": "song",
+            "limit": limit
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                payload = response.json()
+
+            rows = payload.get("results", [])
+            songs: list[dict] = []
+            for item in rows:
+                preview_url = item.get("previewUrl")
+                if not preview_url:
+                    continue
+
+                duration_ms = item.get("trackTimeMillis", 30000)
+                duration_seconds = duration_ms // 1000
+                song_id = str(item.get("trackId", ""))
+                if not song_id:
+                    continue
+
+                songs.append(
+                    {
+                        "songId": f"it-{song_id}",
+                        "title": item.get("trackName", "Unknown Title"),
+                        "artist": item.get("artistName", "Unknown Artist"),
+                        "thumbnail": item.get("artworkUrl100", "").replace("100x100", "400x400"),
+                        "duration": self._format_duration(duration_seconds),
+                        "durationSec": duration_seconds,
+                        "previewUrl": preview_url,
+                        "source": "itunes"
+                    }
+                )
+            return songs
+        except Exception as e:
+            print(f"iTunes search error: {e}")
+            return []
+
+
+
+================================================================================
+FILE: backend/app/services/redis_service.py
+================================================================================
+import asyncio
+import json
+import os
+import time
+from typing import Any, Optional
+
+from redis.asyncio import Redis
+
+
+class RedisService:
+    def __init__(self) -> None:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.redis = None
+        self.redis_url = redis_url
+        self._memory_lock = asyncio.Lock()
+        self._memory_state: dict[str, dict[str, Any]] = {}
+        self._memory_queue: dict[str, list[dict[str, Any]]] = {}
+        self._memory_users: dict[str, dict[str, str]] = {}
+        self._memory_history: dict[str, list[dict[str, Any]]] = {}
+
+        try:
+            # Do not ping in __init__: this module is imported inside an active event loop.
+            self.redis = Redis.from_url(redis_url, decode_responses=True)
+        except Exception as e:
+            print(f"Error creating Redis client for {redis_url}: {e}")
+            self.redis = None
+
+    async def ping(self) -> bool:
+        if self.redis is None:
+            return False
+        try:
+            return await self.redis.ping()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _state_key(room_id: str) -> str:
+        return f"room:{room_id}:state"
+
+    @staticmethod
+    def _queue_key(room_id: str) -> str:
+        return f"room:{room_id}:queue"
+
+    @staticmethod
+    def _users_key(room_id: str) -> str:
+        return f"room:{room_id}:users"
+
+    @staticmethod
+    def _usernames_key(room_id: str) -> str:
+        return f"room:{room_id}:usernames"
+
+    @staticmethod
+    def _history_key(room_id: str) -> str:
+        return f"room:{room_id}:history"
+
+    async def create_room(self, room_id: str, host_id: str) -> None:
+        if self.redis is None:
+            async with self._memory_lock:
+                self._memory_state[room_id] = {
+                    "songId": "",
+                    "previewUrl": "",
+                    "title": "",
+                    "artist": "",
+                    "thumbnail": "",
+                    "duration": "",
+                    "timestamp": 0.0,
+                    "isPlaying": False,
+                    "startedAt": None,
+                    "hostId": host_id,
+                }
+                self._memory_queue.setdefault(room_id, [])
+                self._memory_users.setdefault(room_id, {})
+                self._memory_history.setdefault(room_id, [])
+            return
+        base_state = {
+            "songId": "",
+            "previewUrl": "",
+            "title": "",
+            "artist": "",
+            "thumbnail": "",
+            "duration": "",
+            "timestamp": 0.0,
+            "isPlaying": False,
+            "startedAt": None,
+            "hostId": host_id,
+        }
+        try:
+            await self.redis.set(self._state_key(room_id), json.dumps(base_state))
+        except Exception as e:
+            print(f"Error creating room: {e}")
+
+    async def set_room_state(self, room_id: str, state: dict[str, Any]) -> None:
+        if self.redis is None:
+            async with self._memory_lock:
+                self._memory_state[room_id] = dict(state)
+            return
+        try:
+            await self.redis.set(self._state_key(room_id), json.dumps(state))
+        except Exception as e:
+            print(f"Error setting room state: {e}")
+
+    async def get_room_state(self, room_id: str) -> Optional[dict[str, Any]]:
+        if self.redis is None:
+            async with self._memory_lock:
+                state = self._memory_state.get(room_id)
+                return dict(state) if state else None
+        try:
+            data = await self.redis.get(self._state_key(room_id))
+            return json.loads(data) if data else None
+        except Exception as e:
+            print(f"Error getting room state: {e}")
+            return None
+
+    async def add_user(self, room_id: str, user_id: str, username: str) -> None:
+        if self.redis is None:
+            async with self._memory_lock:
+                users = self._memory_users.setdefault(room_id, {})
+                users[user_id] = username
+            return
+        try:
+            await self.redis.sadd(self._users_key(room_id), user_id)
+            await self.redis.hset(self._usernames_key(room_id), user_id, username)
+        except Exception as e:
+            print(f"Error adding user: {e}")
+
+    async def remove_user(self, room_id: str, user_id: str) -> None:
+        if self.redis is None:
+            async with self._memory_lock:
+                users = self._memory_users.get(room_id, {})
+                users.pop(user_id, None)
+            return
+        try:
+            await self.redis.srem(self._users_key(room_id), user_id)
+            await self.redis.hdel(self._usernames_key(room_id), user_id)
+        except Exception as e:
+            print(f"Error removing user: {e}")
+
+    async def get_users(self, room_id: str) -> list[dict[str, str]]:
+        if self.redis is None:
+            async with self._memory_lock:
+                users = self._memory_users.get(room_id, {})
+                return [{"userId": uid, "username": uname or "Guest"} for uid, uname in users.items()]
+        try:
+            user_ids = await self.redis.smembers(self._users_key(room_id))
+            users: list[dict[str, str]] = []
+            for user_id in user_ids:
+                username = await self.redis.hget(self._usernames_key(room_id), user_id)
+                users.append({"userId": user_id, "username": username or "Guest"})
+            return users
+        except Exception as e:
+            print(f"Error getting users: {e}")
+            return []
+
+    async def add_to_queue(self, room_id: str, song: dict[str, Any]) -> None:
+        if self.redis is None:
+            async with self._memory_lock:
+                self._memory_queue.setdefault(room_id, []).append(dict(song))
+            return
+        try:
+            await self.redis.rpush(self._queue_key(room_id), json.dumps(song))
+        except Exception as e:
+            print(f"Error adding to queue: {e}")
+
+    async def pop_next_song(self, room_id: str) -> Optional[dict[str, Any]]:
+        if self.redis is None:
+            async with self._memory_lock:
+                queue = self._memory_queue.get(room_id, [])
+                if not queue:
+                    return None
+                return dict(queue.pop(0))
+        try:
+            data = await self.redis.lpop(self._queue_key(room_id))
+            return json.loads(data) if data else None
+        except Exception as e:
+            print(f"Error popping from queue: {e}")
+            return None
+
+    async def get_queue(self, room_id: str) -> list[dict[str, Any]]:
+        if self.redis is None:
+            async with self._memory_lock:
+                return [dict(item) for item in self._memory_queue.get(room_id, [])]
+        try:
+            items = await self.redis.lrange(self._queue_key(room_id), 0, -1)
+            return [json.loads(item) for item in items]
+        except Exception as e:
+            print(f"Error getting queue: {e}")
+            return []
+
+    async def push_history(self, room_id: str, song: dict[str, Any]) -> None:
+        if self.redis is None:
+            async with self._memory_lock:
+                self._memory_history.setdefault(room_id, []).append(dict(song))
+            return
+        try:
+            await self.redis.rpush(self._history_key(room_id), json.dumps(song))
+        except Exception as e:
+            print(f"Error pushing to history: {e}")
+
+    async def pop_history(self, room_id: str) -> Optional[dict[str, Any]]:
+        if self.redis is None:
+            async with self._memory_lock:
+                history = self._memory_history.get(room_id, [])
+                if not history:
+                    return None
+                return dict(history.pop())
+        try:
+            data = await self.redis.rpop(self._history_key(room_id))
+            return json.loads(data) if data else None
+        except Exception as e:
+            print(f"Error popping from history: {e}")
+            return None
+
+    async def set_room_expiry(self, room_id: str, ttl_seconds: int = 3600) -> None:
+        if self.redis is None:
+            return
+        keys = [
+            self._state_key(room_id),
+            self._queue_key(room_id),
+            self._users_key(room_id),
+            self._usernames_key(room_id),
+            self._history_key(room_id),
+        ]
+        try:
+            for key in keys:
+                await self.redis.expire(key, ttl_seconds)
+        except Exception as e:
+            print(f"Error setting room expiry: {e}")
+
+    async def clear_room_if_empty(self, room_id: str, ttl_seconds: int = 3600) -> bool:
+        if self.redis is None:
+            async with self._memory_lock:
+                users = self._memory_users.get(room_id, {})
+                if users:
+                    return False
+                self._memory_users.pop(room_id, None)
+                self._memory_state.pop(room_id, None)
+                self._memory_queue.pop(room_id, None)
+                self._memory_history.pop(room_id, None)
+                return True
+        try:
+            user_count = await self.redis.scard(self._users_key(room_id))
+            if user_count == 0:
+                await self.set_room_expiry(room_id, ttl_seconds)
+                return True
+        except Exception as e:
+            print(f"Error clearing room: {e}")
+        return False
+
+    async def calculate_current_position(self, room_id: str) -> float:
+        state = await self.get_room_state(room_id)
+        if not state:
+            return 0.0
+
+        timestamp = float(state.get("timestamp", 0.0))
+        is_playing = bool(state.get("isPlaying", False))
+        started_at = state.get("startedAt")
+
+        if not is_playing or started_at is None:
+            return timestamp
+
+        elapsed = max(0.0, time.time() - float(started_at))
+        return timestamp + elapsed
+
+
+
+================================================================================
+FILE: backend/app/services/youtube_service.py
+================================================================================
+import asyncio
+from typing import Any, Optional
+import yt_dlp
+from ytmusicapi import YTMusic
+
+class YouTubeService:
+    def __init__(self):
+        self.ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'logtostderr': False,
+            # Use multiple clients to bypass datacenter blocks
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web']
+                }
+            }
+        }
+        self.ytmusic = YTMusic()
+
+    async def search_youtube(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """
+        Search for tracks on YouTube Music (filters for songs only).
+        """
+        loop = asyncio.get_event_loop()
+        
+        try:
+            # ytmusic.search is synchronous, run in executor
+            search_results = await loop.run_in_executor(
+                None, 
+                lambda: self.ytmusic.search(query, filter="songs", limit=limit)
+            )
+            
+            results = []
+            for item in search_results:
+                video_id = item.get('videoId')
+                if not video_id:
+                    continue
+                
+                # Extract artist name
+                artists = item.get('artists', [])
+                artist_name = artists[0].get('name', 'Unknown Artist') if artists else 'Unknown Artist'
+                
+                # Thumbnails
+                thumbnails = item.get('thumbnails', [])
+                thumbnail_url = thumbnails[-1].get('url', '') if thumbnails else ''
+                
+                results.append({
+                    "songId": f"yt-{video_id}",
+                    "title": item.get('title', 'Unknown Title'),
+                    "artist": artist_name,
+                    "thumbnail": thumbnail_url,
+                    "duration": item.get('duration', '0:00'),
+                    "durationSec": item.get('duration_seconds', 0),
+                    "previewUrl": "", 
+                    "source": "youtube"
+                })
+            return results
+        except Exception as e:
+            print(f"YouTube Music search error: {e}")
+            # Fallback to standard YouTube search if YTMusic fails
+            return await self._fallback_search(query, limit)
+
+    async def _fallback_search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        loop = asyncio.get_event_loop()
+        search_query = f"ytsearch{limit}:{query} music"
+        
+        try:
+            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(search_query, download=False))
+                
+            entries = info.get('entries', [])
+            results = []
+            for entry in entries:
+                if not entry:
+                    continue
+                
+                results.append({
+                    "songId": f"yt-{entry['id']}",
+                    "title": entry.get('title', 'Unknown Title'),
+                    "artist": entry.get('uploader', 'YouTube Artist'),
+                    "thumbnail": entry.get('thumbnails', [{}])[-1].get('url', ''),
+                    "duration": self._format_duration(entry.get('duration', 0)),
+                    "durationSec": entry.get('duration', 0),
+                    "previewUrl": "",
+                    "source": "youtube"
+                })
+            return results
+        except Exception as e:
+            print(f"Fallback search error: {e}")
+            return []
+
+    async def resolve_url(self, video_id: str) -> Optional[str]:
+        """
+        Extract a fresh streaming URL for a given video ID.
+        """
+        loop = asyncio.get_event_loop()
+        resolve_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+        }
+        
+        try:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            resolve_opts.update(self.ydl_opts)
+            resolve_opts['extract_flat'] = False # We need the actual URL
+            
+            with yt_dlp.YoutubeDL(resolve_opts) as ydl:
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                if info and 'url' in info:
+                    print(f"DEBUG: Successfully resolved URL for {video_id}")
+                    return info.get('url')
+                
+                print(f"DEBUG: No URL in info for {video_id}. Info keys: {info.keys() if info else 'None'}")
+                return None
+        except Exception as e:
+            print(f"YouTube resolution error for {video_id}: {e}")
+            return None
+
+    def _format_duration(self, seconds: Optional[int]) -> str:
+        if not seconds:
+            return "0:00"
+        try:
+            total_seconds = int(seconds)
+            minutes = total_seconds // 60
+            remaining = total_seconds % 60
+            return f"{minutes}:{remaining:02d}"
+        except (ValueError, TypeError):
+            return "0:00"
+
+
+
+================================================================================
+FILE: backend/app/routes/__init__.py
+================================================================================
+# API route package.
+
+
+
+================================================================================
+FILE: backend/app/routes/resolve.py
+================================================================================
+from fastapi import APIRouter, HTTPException
+
+from app.services import youtube_service
+
+router = APIRouter(prefix="/api/resolve", tags=["resolve"])
+
+@router.get("/{video_id}")
+async def resolve_song(video_id: str):
+    """
+    Resolve a YouTube video ID into a fresh streaming URL.
+    """
+    url = await youtube_service.resolve_url(video_id)
+    if not url:
+        raise HTTPException(status_code=404, detail="Could not resolve streaming URL for this song.")
+    
+    return {"url": url}
+
+
+
+================================================================================
+FILE: backend/app/routes/room.py
+================================================================================
+import secrets
+import time
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+
+from app.models.schemas import CreateRoomRequest, JoinRoomRequest
+from app.services.mongo_service import MongoService
+from app.services.redis_service import RedisService
+from app.socket_manager import sio, user_sid_map
+
+router = APIRouter(prefix="/api/rooms", tags=["rooms"])
+from app.services import mongo_service, redis_service
+
+
+@router.post("/create")
+async def create_room(payload: CreateRoomRequest):
+    room_id = payload.roomId or secrets.token_hex(3)
+    await redis_service.create_room(room_id, payload.userId)
+    await redis_service.add_user(room_id, payload.userId, payload.username)
+    await mongo_service.upsert_user(payload.userId, payload.username)
+    return {"roomId": room_id, "hostId": payload.userId}
+
+
+@router.post("/join")
+async def join_room(payload: JoinRoomRequest):
+    state = await redis_service.get_room_state(payload.roomId)
+    if not state:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    await redis_service.add_user(payload.roomId, payload.userId, payload.username)
+    await mongo_service.upsert_user(payload.userId, payload.username)
+
+    queue = await redis_service.get_queue(payload.roomId)
+    users = await redis_service.get_users(payload.roomId)
+    return {"roomId": payload.roomId, "state": state, "queue": queue, "users": users}
+
+
+@router.post("/{room_id}/queue")
+async def add_song_to_queue(room_id: str, payload: dict[str, Any]):
+    song = payload.get("song")
+    if not isinstance(song, dict):
+        raise HTTPException(status_code=400, detail="Invalid song payload")
+
+    required = ("songId", "title", "artist", "thumbnail", "duration")
+    missing = [key for key in required if not song.get(key)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing song fields: {', '.join(missing)}")
+
+    await redis_service.add_to_queue(room_id, song)
+    queue = await redis_service.get_queue(room_id)
+    await sio.emit("queue_updated", {"roomId": room_id, "queue": queue}, room=room_id)
+    return {"success": True, "queue": queue}
+
+
+@router.post("/{room_id}/play")
+async def play_song(room_id: str, payload: dict[str, Any]):
+    song = payload.get("song")
+    timestamp = float(payload.get("timestamp", 0.0))
+    if not isinstance(song, dict):
+        raise HTTPException(status_code=400, detail="Invalid song payload")
+
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update(
+        {
+            "songId": song.get("songId", ""),
+            "previewUrl": song.get("previewUrl", ""),
+            "title": song.get("title", ""),
+            "artist": song.get("artist", ""),
+            "thumbnail": song.get("thumbnail", ""),
+            "duration": song.get("duration", ""),
+            "durationSec": song.get("durationSec", 30),
+            "source": song.get("source", "preview"),
+            "timestamp": timestamp,
+            "isPlaying": True,
+            "startedAt": time.time(),
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("song_changed", {"roomId": room_id, "state": state}, room=room_id)
+    return {"success": True, "state": state}
+
+
+@router.post("/{room_id}/pause")
+async def pause_song(room_id: str, payload: dict[str, Any]):
+    timestamp = float(payload.get("timestamp", 0.0))
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update({"timestamp": timestamp, "isPlaying": False, "startedAt": None})
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("song_paused", {"roomId": room_id, "state": state}, room=room_id)
+    return {"success": True, "state": state}
+
+
+@router.post("/{room_id}/next")
+async def play_next_song(room_id: str):
+    current_state = await redis_service.get_room_state(room_id) or {}
+    if current_state.get("songId"):
+        await redis_service.push_history(
+            room_id,
+            {
+                "songId": current_state.get("songId", ""),
+                "previewUrl": current_state.get("previewUrl", ""),
+                "title": current_state.get("title", "Previously played"),
+                "artist": current_state.get("artist", "Unknown Artist"),
+                "thumbnail": current_state.get("thumbnail", ""),
+                "duration": current_state.get("duration", "0:30"),
+                "durationSec": int(current_state.get("durationSec", 30)),
+                "source": current_state.get("source", "preview"),
+            },
+        )
+
+    song = await redis_service.pop_next_song(room_id)
+    if not song:
+        await sio.emit("queue_empty", {"roomId": room_id}, room=room_id)
+        return {"success": True, "queueEmpty": True}
+
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update(
+        {
+            "songId": song.get("songId", ""),
+            "previewUrl": song.get("previewUrl", ""),
+            "title": song.get("title", ""),
+            "artist": song.get("artist", ""),
+            "thumbnail": song.get("thumbnail", ""),
+            "duration": song.get("duration", ""),
+            "durationSec": song.get("durationSec", 30),
+            "source": song.get("source", "preview"),
+            "timestamp": 0.0,
+            "isPlaying": True,
+            "startedAt": time.time(),
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    queue = await redis_service.get_queue(room_id)
+    await sio.emit("song_changed", {"roomId": room_id, "state": state, "song": song, "queue": queue}, room=room_id)
+    return {"success": True, "state": state, "queue": queue}
+
+
+@router.post("/{room_id}/prev")
+async def play_previous_song(room_id: str):
+    previous_song = await redis_service.pop_history(room_id)
+    if not previous_song:
+        await sio.emit("queue_empty", {"roomId": room_id}, room=room_id)
+        return {"success": True, "historyEmpty": True}
+
+    state = await redis_service.get_room_state(room_id) or {}
+    state.update(
+        {
+            "songId": previous_song.get("songId", ""),
+            "previewUrl": previous_song.get("previewUrl", ""),
+            "title": previous_song.get("title", ""),
+            "artist": previous_song.get("artist", ""),
+            "thumbnail": previous_song.get("thumbnail", ""),
+            "duration": previous_song.get("duration", ""),
+            "durationSec": previous_song.get("durationSec", 30),
+            "source": previous_song.get("source", "preview"),
+            "timestamp": 0.0,
+            "startedAt": time.time(),
+            "isPlaying": True,
+        }
+    )
+    await redis_service.set_room_state(room_id, state)
+    await sio.emit("song_restarted", {"roomId": room_id, "state": state, "song": previous_song}, room=room_id)
+    return {"success": True, "state": state}
+
+
+@router.post("/{room_id}/kick")
+async def kick_member(room_id: str, payload: dict[str, Any]):
+    by_user_id = payload.get("byUserId")
+    target_user_id = payload.get("targetUserId")
+    if not by_user_id or not target_user_id:
+        raise HTTPException(status_code=400, detail="Missing byUserId or targetUserId")
+
+    state = await redis_service.get_room_state(room_id) or {}
+    if state.get("hostId") != by_user_id:
+        raise HTTPException(status_code=403, detail="Only host can remove members")
+    if by_user_id == target_user_id:
+        raise HTTPException(status_code=400, detail="Host cannot remove themselves")
+
+    await redis_service.remove_user(room_id, target_user_id)
+    target_sid = user_sid_map.pop(target_user_id, None)
+    if target_sid:
+        await sio.leave_room(target_sid, room_id)
+        await sio.emit("kicked", {"roomId": room_id}, room=target_sid)
+
+    users = await redis_service.get_users(room_id)
+    await sio.emit("user_left", {"roomId": room_id, "userId": target_user_id, "users": users}, room=room_id)
+    return {"success": True, "users": users}
+
+
+
+================================================================================
+FILE: backend/app/routes/search.py
+================================================================================
+from fastapi import APIRouter, HTTPException, Query
+from app.services import youtube_service
+from app.services.music import MusicService
+
+router = APIRouter(prefix="/api/search", tags=["search"])
+music_service = MusicService()
+
+
+@router.get("")
+async def search_music(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(10, ge=1, le=25),
+    source: str = Query("preview", pattern="^(preview|full)$"),
+):
+    try:
+        if source == "full":
+            return {"results": await youtube_service.search_youtube(q, limit)}
+        return {"results": await music_service.search_songs(q, limit)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Search failed: {exc}") from exc
+
+

@@ -307,6 +307,12 @@ const App = () => {
     }
   };
 
+  const handleSongReplace = (newSong) => {
+    if (!roomId || !newSong?.songId) return;
+    console.log("DEBUG: Auto-replacing song due to resolution failure", newSong);
+    playSongInRoom(roomId, newSong, 0).catch((err) => console.error("Auto-replace failed", err));
+  };
+
   const playerRef = useRef(null);
 
   const handleTogglePlay = () => {
@@ -358,6 +364,7 @@ const App = () => {
             song={state}
             onSyncEmit={onSyncEmit}
             onPlaybackChange={onPlaybackChange}
+            onSongReplace={handleSongReplace}
           />
         </section>
         <section className="right">
