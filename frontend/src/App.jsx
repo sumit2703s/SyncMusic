@@ -307,6 +307,14 @@ const App = () => {
     }
   };
 
+  const goToNextSong = () => {
+    if (!roomId) return;
+    nextSongInRoom(roomId).catch((error) => {
+      const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+      console.error("Next failed:", detail);
+    });
+  };
+
   const handleSongReplace = (newSong) => {
     if (!roomId || !newSong?.songId) return;
     console.log("DEBUG: Auto-replacing song due to resolution failure", newSong);
@@ -365,6 +373,8 @@ const App = () => {
             onSyncEmit={onSyncEmit}
             onPlaybackChange={onPlaybackChange}
             onSongReplace={handleSongReplace}
+            onNext={goToNextSong}
+            isHost={userId === hostId}
           />
         </section>
         <section className="right">
@@ -455,12 +465,7 @@ const App = () => {
         </button>
         <button
           className="control-btn secondary"
-          onClick={() =>
-            nextSongInRoom(roomId).catch((error) => {
-              const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-              alert(`Next failed: ${detail}`);
-            })
-          }
+          onClick={goToNextSong}
         >
           Next
         </button>

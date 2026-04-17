@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { searchMusic } from "../services/api";
 
-const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange }, ref) => {
+const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace, onNext, isHost }, ref) => {
   const audioRef = useRef(null);
   const ytPlayerRef = useRef(null);
   const ytPlayerContainerRef = useRef(null);
@@ -80,6 +80,9 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
             onPlaybackChange("play", event.target.getCurrentTime());
           } else if (event.data === window.YT.PlayerState.PAUSED) {
             onPlaybackChange("pause", event.target.getCurrentTime());
+          } else if (event.data === window.YT.PlayerState.ENDED) {
+            console.log("DEBUG: YT Video Ended");
+            if (isHost && onNext) onNext();
           }
         }
       }
@@ -243,6 +246,10 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
               controls 
               className="audio-player" 
               style={{ display: song?.source === "youtube" ? "none" : "block" }} 
+              onEnded={() => {
+                console.log("DEBUG: Audio Ended");
+                if (isHost && onNext) onNext();
+              }}
             />
           </div>
         </div>
