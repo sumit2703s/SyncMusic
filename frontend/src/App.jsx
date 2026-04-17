@@ -155,6 +155,7 @@ const App = () => {
       setState(payload.state || {});
       setQueue(payload.queue || []);
       setUsers(payload.users || []);
+      if (payload.state?.hostId) setHostId(payload.state.hostId);
       if (payload.syncTime && payload.state?.songId) {
         socket.emit("sync_time", {
           roomId: payload.roomId,
@@ -175,6 +176,7 @@ const App = () => {
     socket.on("user_left", ({ users: nextUsers }) => setUsers(nextUsers || []));
     socket.on("song_changed", ({ state: nextState, queue: nextQueue }) => {
       setState(nextState || {});
+      if (nextState?.hostId) setHostId(nextState.hostId);
       if (nextQueue) setQueue(nextQueue);
     });
     socket.on("song_paused", ({ state: nextState }) => setState(nextState || {}));

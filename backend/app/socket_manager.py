@@ -267,11 +267,13 @@ async def next_song(sid, data):
     state.update(
         {
             "songId": song["songId"],
-            "previewUrl": song["previewUrl"],
+            "previewUrl": song.get("previewUrl", ""),
             "title": song["title"],
             "artist": song["artist"],
             "thumbnail": song["thumbnail"],
             "duration": song["duration"],
+            "durationSec": song.get("durationSec", 30),
+            "source": song.get("source", "preview"),
             "timestamp": 0.0,
             "isPlaying": True,
             "startedAt": time.time(),

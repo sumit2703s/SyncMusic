@@ -396,6 +396,7 @@ const App = () => {
       setState(payload.state || {});
       setQueue(payload.queue || []);
       setUsers(payload.users || []);
+      if (payload.state?.hostId) setHostId(payload.state.hostId);
       if (payload.syncTime && payload.state?.songId) {
         socket.emit("sync_time", {
           roomId: payload.roomId,
@@ -416,6 +417,7 @@ const App = () => {
     socket.on("user_left", ({ users: nextUsers }) => setUsers(nextUsers || []));
     socket.on("song_changed", ({ state: nextState, queue: nextQueue }) => {
       setState(nextState || {});
+      if (nextState?.hostId) setHostId(nextState.hostId);
       if (nextQueue) setQueue(nextQueue);
     });
     socket.on("song_paused", ({ state: nextState }) => setState(nextState || {}));
@@ -739,134 +741,196 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 FILE: frontend/src/styles.css
 ================================================================================
 :root {
-  --bg-main: #09090b;
-  --bg-card: #18181b;
-  --bg-item: #27272a;
-  --border-main: #3f3f46;
-  --accent-primary: #10b981;
-  --accent-hover: #059669;
-  --text-main: #fafafa;
-  --text-muted: #a1a1aa;
+  --bg-black: #000000;
+  --bg-dark: #0a0a0a;
+  --bg-card: #141414;
+  --bg-hover: #22c55e;
+  --text-white: #ffffff;
+  --text-grey: #a0a0a0;
+  --primary-green: #1db954;
+  --border-grey: #282828;
 }
 
 * {
-  box-sizing: border-box;
   margin: 0;
   padding: 0;
+  box-sizing: border-box;
 }
 
 body {
+  background-color: var(--bg-black);
+  color: var(--text-white);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background-color: var(--bg-main);
-  color: var(--text-main);
-  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
 .app {
+  padding: 20px;
   max-width: 1200px;
   margin: 0 auto;
-  padding: 20px;
-  min-height: 100vh;
+  padding-bottom: 120px; /* Space for fixed bottom bar */
 }
 
+/* Header */
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 30px;
+  padding: 10px 0;
 }
 
 header h1 {
   font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--accent-primary);
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--primary-green);
 }
 
-/* Landing / Login */
-.landing {
-  max-width: 400px;
-  margin: 100px auto;
+.chip {
   background: var(--bg-card);
-  padding: 30px;
-  border-radius: 12px;
-  border: 1px solid var(--border-main);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid var(--border-grey);
 }
 
-.landing h2 {
-  margin-bottom: 20px;
+/* Landing */
+.landing {
+  max-width: 380px;
+  margin: 80px auto;
+  background: var(--bg-card);
+  padding: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border-grey);
   text-align: center;
 }
 
-/* Grid Layout */
+.landing h2 {
+  margin-bottom: 24px;
+}
+
+/* Main Grid */
 main {
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 20px;
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
 }
 
 .card {
   background: var(--bg-card);
-  border: 1px solid var(--border-main);
+  padding: 24px;
   border-radius: 12px;
-  padding: 20px;
+  border: 1px solid var(--border-grey);
 }
 
-/* Player Section */
+/* Player Card */
 .now-playing {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 20px;
-  padding: 12px;
-  background: var(--bg-item);
-  border-radius: 8px;
+  gap: 20px;
+  margin-bottom: 24px;
 }
 
 .now-playing img {
-  width: 56px;
-  height: 56px;
-  border-radius: 6px;
+  width: 64px;
+  height: 64px;
+  border-radius: 4px;
+  background: #222;
 }
 
 .song-title {
-  font-weight: 600;
-  font-size: 1.1rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 4px;
 }
 
 .song-artist {
-  color: var(--text-muted);
-  font-size: 0.9rem;
+  color: var(--text-grey);
+  font-size: 0.95rem;
+}
+
+.player-viewport {
+  margin-top: 10px;
+  width: 100%;
 }
 
 #yt-player {
   background: #000;
   border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  aspect-ratio: 16 / 9;
 }
 
-/* List Items */
-.queue-list, .users-list, .results {
+.audio-player {
+  width: 100%;
+  margin-top: 10px;
+  filter: invert(100%) hue-rotate(180deg) brightness(1.5); /* Make standard audio look dark */
+}
+
+/* Inputs & Buttons */
+input {
+  width: 100%;
+  padding: 14px 18px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-grey);
+  border-radius: 8px;
+  color: white;
+  font-size: 1rem;
+  margin-bottom: 12px;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--primary-green);
+}
+
+button {
+  padding: 12px 24px;
+  border-radius: 8px;
+  border: none;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+button.primary, .primary-btn {
+  background: var(--primary-green);
+  color: black;
+}
+
+button:hover {
+  transform: scale(1.02);
+  filter: brightness(1.1);
+}
+
+button.secondary {
+  background: #333;
+  color: white;
+}
+
+/* Queue and Results */
+.queue-list, .results {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 350px;
-  overflow-y: auto;
+  gap: 10px;
+  margin-top: 15px;
 }
 
-.queue-item, .result-item, .user-item {
+.queue-item, .result-item {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px;
-  background: var(--bg-item);
-  border-radius: 8px;
-  transition: background 0.2s;
+  border-radius: 6px;
+  background: transparent;
+  transition: background 0.1s;
 }
 
 .queue-item:hover, .result-item:hover {
-  background: #3f3f46;
+  background: #1a1a1a;
 }
 
 .queue-item img, .result-item img {
@@ -875,146 +939,91 @@ main {
   border-radius: 4px;
 }
 
-/* Inputs & Buttons */
-input {
-  width: 100%;
-  padding: 10px 14px;
-  background: var(--bg-main);
-  border: 1px solid var(--border-main);
-  border-radius: 6px;
-  color: #fff;
-  font-size: 0.95rem;
-  margin-bottom: 10px;
-}
-
-button {
-  padding: 10px 20px;
-  border-radius: 6px;
-  border: none;
-  font-weight: 600;
-  cursor: pointer;
-  background: var(--accent-primary);
-  color: #fff;
-  transition: background 0.2s;
-}
-
-button:hover {
-  background: var(--accent-hover);
-}
-
-button.secondary {
-  background: #3f3f46;
-  color: #fff;
-}
-
-button.secondary:hover {
-  background: #52525b;
-}
-
 .source-toggle {
   display: flex;
-  gap: 4px;
-  background: var(--bg-main);
+  background: #1a1a1a;
   padding: 4px;
   border-radius: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
 .source-toggle button {
   flex: 1;
   background: transparent;
-  color: var(--text-muted);
-  padding: 6px;
+  color: var(--text-grey);
   font-size: 0.85rem;
 }
 
 .source-toggle button.active {
-  background: var(--bg-item);
-  color: #fff;
+  background: #333;
+  color: white;
 }
 
-/* Status Indicator */
-.avatar {
-  width: 32px;
-  height: 32px;
-  background: var(--accent-primary);
+/* Fixed Bottom Bar */
+.player-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 90px;
+  background: #000;
+  border-top: 1px solid var(--border-grey);
+  padding: 0 40px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 30px;
+  z-index: 9999;
+}
+
+.control-btn {
+  background: transparent;
+  color: white;
+  font-size: 1.1rem;
+}
+
+.play-pause-btn {
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
+  background: white !important;
+  color: black;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 0.85rem;
+}
+
+/* Responsiveness */
+@media (max-width: 850px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+  
+  .app {
+    padding: 16px;
+    padding-bottom: 120px;
+  }
+  
+  .player-bar {
+    padding: 0 20px;
+    gap: 20px;
+  }
+  
+  .song-title { font-size: 1.1rem; }
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  margin-left: auto;
+  margin-left: 10px;
 }
+.status-dot.online { background: var(--primary-green); box-shadow: 0 0 10px var(--primary-green); }
+.status-dot.offline { background: #ff4141; }
 
-.status-dot.online { background: #10b981; }
-.status-dot.offline { background: #ef4444; }
-
-/* Fixed Bottom Player */
-.player-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: var(--bg-card);
-  border-top: 1px solid var(--border-main);
-  padding: 16px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 20px;
-  z-index: 1000;
-}
-
-.control-btn {
-  background: transparent;
-  padding: 8px;
-  font-size: 1.25rem;
-  display: flex;
-}
-
-.play-pause-btn {
-  background: #fff;
-  color: #000;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.play-pause-btn:hover {
-  background: #f0f0f0;
-  transform: scale(1.05);
-}
-
-/* Mobile Responsiveness */
-@media (max-width: 768px) {
-  main {
-    grid-template-columns: 1fr;
-  }
-  
-  .app {
-    padding: 15px;
-    padding-bottom: 100px;
-  }
-  
-  header h1 { font-size: 1.25rem; }
-  
-  .landing { margin-top: 40px; }
-}
-
-.hidden { display: none; }
-.muted { color: var(--text-muted); font-size: 0.9rem; }
-.error-text { color: #f87171; font-size: 0.85rem; }
+.hidden { display: none !important; }
+.muted { color: var(--text-grey); }
+.error-text { color: #ff5555; font-size: 0.85rem; }
 
 
 
@@ -1085,7 +1094,6 @@ import { searchMusic } from "../services/api";
 const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace, onNext, isHost }, ref) => {
   const audioRef = useRef(null);
   const ytPlayerRef = useRef(null);
-  const ytPlayerContainerRef = useRef(null);
   const suppressEmitRef = useRef(false);
   const [error, setError] = useState("");
   const [isYTReady, setIsYTReady] = useState(false);
@@ -1108,11 +1116,11 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     };
   }, []);
 
-  // 2. Initialize / Update YouTube Player
+  // 2. Manage YouTube Player Lifecycle
   useEffect(() => {
     if (!isYTReady || song?.source !== "youtube" || !song?.songId) {
       if (ytPlayerRef.current) {
-        console.log("DEBUG: Destroying YT Player as source changed");
+        console.log("DEBUG: Destroying YT Player");
         ytPlayerRef.current.destroy();
         ytPlayerRef.current = null;
       }
@@ -1121,82 +1129,107 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
 
     const videoId = song.songId.replace("yt-", "");
     
-    // If player exists, just load new video
+    // Programmatic change starting - LOCK emissions
+    suppressEmitRef.current = true;
+    
     if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
-      console.log("DEBUG: Loading new video into existing YT Player", videoId);
+      console.log("DEBUG: Updating existing YT Player", videoId);
       ytPlayerRef.current.loadVideoById({
         videoId: videoId,
         startSeconds: Number(song.timestamp || 0)
       });
       if (song.isPlaying) ytPlayerRef.current.playVideo();
       else ytPlayerRef.current.pauseVideo();
-      return;
-    }
-
-    // Create new player
-    console.log("DEBUG: Creating new YT Player for", videoId);
-    ytPlayerRef.current = new window.YT.Player("yt-player", {
-      height: "200",
-      width: "100%",
-      videoId: videoId,
-      playerVars: {
-        autoplay: 1,
-        controls: 1,
-        modestbranding: 1,
-        origin: window.location.origin,
-        playsinline: 1,
-        enablejsapi: 1
-      },
-      events: {
-        onReady: (event) => {
-          event.target.seekTo(Number(song.timestamp || 0));
-          if (song.isPlaying) event.target.playVideo();
-          else event.target.pauseVideo();
+    } else {
+      console.log("DEBUG: Initializing new YT Player", videoId);
+      ytPlayerRef.current = new window.YT.Player("yt-player", {
+        height: "240",
+        width: "100%",
+        videoId: videoId,
+        playerVars: {
+          autoplay: 1,
+          controls: 1,
+          modestbranding: 1,
+          origin: window.location.origin,
+          playsinline: 1,
+          enablejsapi: 1
         },
-        onStateChange: (event) => {
-          if (suppressEmitRef.current) return;
-          
-          // PLAYING = 1, PAUSED = 2
-          if (event.data === window.YT.PlayerState.PLAYING) {
-            onPlaybackChange("play", event.target.getCurrentTime());
-          } else if (event.data === window.YT.PlayerState.PAUSED) {
-            onPlaybackChange("pause", event.target.getCurrentTime());
-          } else if (event.data === window.YT.PlayerState.ENDED) {
-            console.log("DEBUG: YT Video Ended");
-            if (isHost && onNext) onNext();
+        events: {
+          onReady: (event) => {
+            event.target.seekTo(Number(song.timestamp || 0));
+            if (song.isPlaying) event.target.playVideo();
+            else event.target.pauseVideo();
+          },
+          onStateChange: (event) => {
+            if (suppressEmitRef.current) {
+              console.log("DEBUG: YT Event Suppressed (Programmatic Change)");
+              return;
+            }
+            
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              onPlaybackChange("play", event.target.getCurrentTime());
+            } else if (event.data === window.YT.PlayerState.PAUSED) {
+              onPlaybackChange("pause", event.target.getCurrentTime());
+            } else if (event.data === window.YT.PlayerState.ENDED) {
+              console.log("DEBUG: YT Ended reached");
+              if (isHost && onNext) onNext();
+            }
           }
         }
-      }
-    });
+      });
+    }
+
+    // Release look after transition settles
+    setTimeout(() => {
+      suppressEmitRef.current = false;
+    }, 2000);
+
   }, [isYTReady, song?.songId, song?.source]);
 
-  // 3. Handle Standard Audio Player Source Change
+  // Handle Play/Pause changes
   useEffect(() => {
-    if (song?.source === "youtube" || !song?.songId || !audioRef.current) return;
-    const audio = audioRef.current;
-    const finalUrl = song.previewUrl;
-
-    if (audio.src !== finalUrl) {
-      console.log("DEBUG: Setting new audio source", finalUrl);
-      suppressEmitRef.current = true;
-      audio.src = finalUrl;
-      audio.currentTime = Number(song.timestamp || 0);
-      if (song.isPlaying) audio.play().catch(() => {});
-      else audio.pause();
-      setTimeout(() => { suppressEmitRef.current = false; }, 1000);
-    } else {
-      const diff = Math.abs(audio.currentTime - Number(song.timestamp || 0));
-      if (diff > 2.0) {
-        suppressEmitRef.current = true;
-        audio.currentTime = Number(song.timestamp || 0);
-        setTimeout(() => suppressEmitRef.current = false, 500);
+    if (!song?.songId) return;
+    
+    suppressEmitRef.current = true;
+    
+    if (song.source === "youtube") {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === "function") {
+        if (song.isPlaying) ytPlayerRef.current.playVideo();
+        else ytPlayerRef.current.pauseVideo();
       }
-      if (song.isPlaying && audio.paused) audio.play().catch(() => {});
-      else if (!song.isPlaying && !audio.paused) audio.pause();
+    } else if (audioRef.current) {
+      if (song.isPlaying) audioRef.current.play().catch(() => {});
+      else audioRef.current.pause();
     }
-  }, [song?.songId, song?.previewUrl, song?.isPlaying, song?.timestamp, song?.source]);
 
-  // Handle manual ref calls from parent
+    setTimeout(() => {
+      suppressEmitRef.current = false;
+    }, 1000);
+  }, [song?.isPlaying]);
+
+  // Handle Sync Time changes
+  useEffect(() => {
+    if (!song?.songId) return;
+    
+    suppressEmitRef.current = true;
+    const targetTime = Number(song.timestamp || 0);
+
+    if (song.source === "youtube") {
+      const player = ytPlayerRef.current;
+      if (player && typeof player.getCurrentTime === "function") {
+        const diff = Math.abs(player.getCurrentTime() - targetTime);
+        if (diff > 2.0) player.seekTo(targetTime);
+      }
+    } else if (audioRef.current) {
+      const diff = Math.abs(audioRef.current.currentTime - targetTime);
+      if (diff > 2.0) audioRef.current.currentTime = targetTime;
+    }
+
+    setTimeout(() => {
+      suppressEmitRef.current = false;
+    }, 1000);
+  }, [song?.timestamp]);
+
   useImperativeHandle(ref, () => ({
     play: () => {
       if (song?.source === "youtube") ytPlayerRef.current?.playVideo();
@@ -1208,45 +1241,34 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     }
   }));
 
-  // Synchronize with socket events
+  // Socket Sync Event Handler
   useEffect(() => {
     if (!socket) return;
     
     const handleSync = ({ timestamp, isPlaying, songId }) => {
-      // If the sync event is for a different song, ignore it
       if (songId && songId !== song?.songId) return;
       if (suppressEmitRef.current) return;
 
-      if (song?.source === "youtube") {
-        const player = ytPlayerRef.current;
-        if (!player || typeof player.getCurrentTime !== "function") return;
-        const current = player.getCurrentTime();
-        if (Math.abs(current - timestamp) > 1.5) {
-          suppressEmitRef.current = true;
-          player.seekTo(timestamp);
-          if (isPlaying) player.playVideo();
-          else player.pauseVideo();
-          setTimeout(() => { suppressEmitRef.current = false; }, 500);
-        }
-      } else {
-        const audio = audioRef.current;
-        if (!audio) return;
-        const current = audio.currentTime || 0;
-        if (Math.abs(current - timestamp) > 1.2) {
-          suppressEmitRef.current = true;
-          audio.currentTime = timestamp;
-          if (isPlaying && audio.paused) audio.play().catch(() => {});
-          else if (!isPlaying && !audio.paused) audio.pause();
-          setTimeout(() => { suppressEmitRef.current = false; }, 300);
-        }
+      suppressEmitRef.current = true;
+      if (song?.source === "youtube" && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
+        const current = ytPlayerRef.current.getCurrentTime();
+        if (Math.abs(current - timestamp) > 1.5) ytPlayerRef.current.seekTo(timestamp);
+        if (isPlaying) ytPlayerRef.current.playVideo();
+        else ytPlayerRef.current.pauseVideo();
+      } else if (audioRef.current) {
+        const current = audioRef.current.currentTime || 0;
+        if (Math.abs(current - timestamp) > 1.2) audioRef.current.currentTime = timestamp;
+        if (isPlaying && audioRef.current.paused) audioRef.current.play().catch(() => {});
+        else if (!isPlaying && !audioRef.current.paused) audioRef.current.pause();
       }
+      setTimeout(() => { suppressEmitRef.current = false; }, 800);
     };
 
     socket.on("sync_time", handleSync);
     return () => socket.off("sync_time", handleSync);
-  }, [socket, song?.source]);
+  }, [socket, song?.songId, song?.source]);
 
-  // Periodic heartbeat sync
+  // Periodic heartbeat
   useEffect(() => {
     const interval = setInterval(() => {
       if (!roomId || suppressEmitRef.current) return;
@@ -1258,91 +1280,46 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
         const player = ytPlayerRef.current;
         if (!player || typeof player.getCurrentTime !== "function" || typeof player.getVideoData !== "function") return;
         
-        // TRANSITION GUARD: Check if the player is actually playing the correct video
         const videoData = player.getVideoData();
-        const currentPlayerId = videoData ? videoData.video_id : "";
-        const targetPlayerId = song.songId.replace("yt-", "");
-
-        if (currentPlayerId !== targetPlayerId) {
-          console.log("DEBUG: Heartbeat skipped - video ID mismatch (Transitioning)");
-          return;
-        }
+        if (!videoData || videoData.video_id !== song.songId.replace("yt-", "")) return;
 
         timestamp = player.getCurrentTime();
         isPlaying = player.getPlayerState() === window.YT.PlayerState.PLAYING;
-      } else {
-        const audio = audioRef.current;
-        if (!audio) return;
-        timestamp = audio.currentTime || 0;
-        isPlaying = !audio.paused;
+      } else if (audioRef.current) {
+        timestamp = audioRef.current.currentTime || 0;
+        isPlaying = !audioRef.current.paused;
       }
 
       onSyncEmit(timestamp, isPlaying, song?.songId);
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [roomId, onSyncEmit, song?.source]);
+  }, [roomId, onSyncEmit, song?.songId, song?.source]);
 
   return (
     <div className="card player-card">
-      <h3>Now Playing</h3>
-      {error && (
-        <div className="error-overlay" style={{ background: "rgba(255,0,0,0.1)", padding: "10px", borderRadius: "8px", marginBottom: "10px", border: "1px solid rgba(255,0,0,0.3)" }}>
-          <p style={{ color: "#ff4444", fontSize: "0.9rem", margin: 0 }}>⚠️ {error}</p>
+      <div className="now-playing">
+        <img src={song?.thumbnail || ""} alt={song?.title} />
+        <div className="song-info">
+          <div className="song-title">{song?.title || "No song playing"}</div>
+          <div className="song-artist">{song?.artist || "Add a song to start"}</div>
         </div>
-      )}
-      {song?.songId ? (
-        <div>
-          <div className="now-playing">
-            <img src={song.thumbnail} alt={song.title} />
-            <div>
-              <div className="song-title">{song.title}</div>
-              <small className="song-artist">{song.artist}</small>
-              {song.source === "preview" && (
-                <small style={{ color: "#888", display: "block", fontSize: "0.75rem" }}>
-                  🎧 30s Preview
-                </small>
-              )}
-            </div>
-            <small className="song-duration">{song.duration}</small>
-          </div>
-          
-          <div className="player-container" style={{ marginTop: "15px" }}>
-            {/* YouTube IFrame Container */}
-            <div 
-              id="yt-player" 
-              style={{ 
-                display: song?.source === "youtube" ? "block" : "none",
-                width: "100%",
-                borderRadius: "10px",
-                overflow: "hidden",
-                aspectRatio: "16/9",
-                background: "#000"
-              }} 
-            />
-            
-            {/* Standard Audio Player */}
-            <audio 
-              ref={audioRef} 
-              controls 
-              className="audio-player" 
-              style={{ display: song?.source === "youtube" ? "none" : "block" }} 
-              onEnded={() => {
-                console.log("DEBUG: Audio Ended");
-                if (isHost && onNext) onNext();
-              }}
-            />
-          </div>
-        </div>
-      ) : (
-        <p className="muted">Add a song to start listening together.</p>
-      )}
+      </div>
+      
+      <div className="player-viewport">
+        <div id="yt-player" className={song?.source === "youtube" ? "" : "hidden"} />
+        <audio 
+          ref={audioRef} 
+          controls 
+          className={`audio-player ${song?.source === "youtube" ? "hidden" : ""}`}
+          onEnded={() => { if (isHost && onNext) onNext(); }}
+        />
+      </div>
     </div>
   );
 });
 
 Player.displayName = "Player";
-
 export default Player;
 
 
@@ -1916,11 +1893,13 @@ async def next_song(sid, data):
     state.update(
         {
             "songId": song["songId"],
-            "previewUrl": song["previewUrl"],
+            "previewUrl": song.get("previewUrl", ""),
             "title": song["title"],
             "artist": song["artist"],
             "thumbnail": song["thumbnail"],
             "duration": song["duration"],
+            "durationSec": song.get("durationSec", 30),
+            "source": song.get("source", "preview"),
             "timestamp": 0.0,
             "isPlaying": True,
             "startedAt": time.time(),
