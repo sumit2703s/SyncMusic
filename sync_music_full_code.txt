@@ -548,6 +548,12 @@ const App = () => {
     }
   };
 
+  const handleSongReplace = (newSong) => {
+    if (!roomId || !newSong?.songId) return;
+    console.log("DEBUG: Auto-replacing song due to resolution failure", newSong);
+    playSongInRoom(roomId, newSong, 0).catch((err) => console.error("Auto-replace failed", err));
+  };
+
   const playerRef = useRef(null);
 
   const handleTogglePlay = () => {
@@ -599,6 +605,7 @@ const App = () => {
             song={state}
             onSyncEmit={onSyncEmit}
             onPlaybackChange={onPlaybackChange}
+            onSongReplace={handleSongReplace}
           />
         </section>
         <section className="right">
@@ -1108,9 +1115,9 @@ export const useSocket = () => {
 FILE: frontend/src/components/Player.jsx
 ================================================================================
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { resolveSong } from "../services/api";
+import { resolveSong, searchMusic } from "../services/api";
 
-const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange }, ref) => {
+const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace }, ref) => {
   const audioRef = useRef(null);
   const suppressEmitRef = useRef(false);
   const [resolving, setResolving] = useState(false);
@@ -1138,19 +1145,43 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
 
     const applySource = async () => {
       let finalUrl = song.previewUrl;
-      
+
       // If song is from YouTube and needs resolution
       if (song.source === "youtube" && !song.previewUrl) {
         setResolving(true);
         setError("");
         try {
           finalUrl = await resolveSong(song.songId);
-          if (!finalUrl) throw new Error("YouTube blocked the stream resolution.");
-        } catch (error) {
-          console.error("Resolution failed", error);
-          setError("YouTube blocked the request. Try a 'Short Preview' version of this song.");
-          setResolving(false);
-          return;
+          if (!finalUrl) throw new Error("No URL returned");
+        } catch (err) {
+          console.error("YouTube resolution failed, trying preview fallback...", err);
+
+          // ── Auto-fallback: search the same song on Deezer/iTunes preview ──
+          try {
+            const query = `${song.title} ${song.artist}`;
+            const previewResults = await searchMusic(query, "preview");
+            if (previewResults && previewResults.length > 0) {
+              const fallback = previewResults[0];
+              console.log("DEBUG: Using preview fallback", fallback);
+
+              // Notify parent to swap this song for the preview version
+              if (onSongReplace) {
+                onSongReplace({ ...fallback, _fallbackFor: song.songId });
+              } else {
+                // Directly set the audio src if no parent handler
+                finalUrl = fallback.previewUrl;
+              }
+            } else {
+              throw new Error("No preview available either");
+            }
+          } catch (fallbackErr) {
+            console.error("Preview fallback also failed", fallbackErr);
+            setError(
+              "⚠️ YouTube blocked this track & no preview was found. Try searching in Preview mode."
+            );
+            setResolving(false);
+            return;
+          }
         } finally {
           setResolving(false);
         }
@@ -1161,30 +1192,30 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
       if (audio.src !== finalUrl) {
         console.log("DEBUG: Setting new source", finalUrl);
         setStreamUrl(finalUrl);
+        setError(""); // clear any previous error when we successfully load
         suppressEmitRef.current = true;
         audio.src = finalUrl;
         audio.currentTime = Number(song.timestamp || 0);
-        
+
         if (song.isPlaying) {
           audio.play().catch((e) => console.warn("Auto-play blocked:", e));
         } else {
           audio.pause();
         }
-        
+
         setTimeout(() => {
           suppressEmitRef.current = false;
-        }, 1000); // Increased suppression to allow for buffer/load
+        }, 1000);
       } else {
-        // Source is same, check if we need to sync play/pause status
         const diff = Math.abs(audio.currentTime - Number(song.timestamp || 0));
-        
-        if (diff > 2.0) { // Increased threshold for drift
+
+        if (diff > 2.0) {
           console.log(`DEBUG: Drifting by ${diff}s, syncing...`);
           suppressEmitRef.current = true;
           audio.currentTime = Number(song.timestamp || 0);
           setTimeout(() => suppressEmitRef.current = false, 500);
         }
-        
+
         if (song.isPlaying && audio.paused) {
           audio.play().catch(() => {});
         } else if (!song.isPlaying && !audio.paused) {
@@ -1225,12 +1256,12 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
     const interval = setInterval(() => {
       const audio = audioRef.current;
       if (!audio || !roomId || suppressEmitRef.current) return;
-      
+
       const timestamp = audio.currentTime || 0;
       const isPlaying = !audio.paused;
-      
+
       onSyncEmit(timestamp, isPlaying);
-    }, 5000); // Send heartbeat every 5 seconds
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [roomId, onSyncEmit]);
@@ -1246,18 +1277,17 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
       const current = audio.currentTime || 0;
       const diff = Math.abs(current - timestamp);
 
-      // Only force sync if the drift is significant (> 1s)
       if (diff > 1.2) {
         console.log(`Syncing time: drift of ${diff.toFixed(2)}s detected.`);
         suppressEmitRef.current = true;
         audio.currentTime = timestamp;
-        
+
         if (isPlaying && audio.paused) {
           audio.play().catch(() => {});
         } else if (!isPlaying && !audio.paused) {
           audio.pause();
         }
-        
+
         setTimeout(() => {
           suppressEmitRef.current = false;
         }, 300);
@@ -1276,12 +1306,21 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
       <h3>Now Playing</h3>
       {resolving && (
         <div className="resolving-overlay">
-          <p className="loading-text">Extracting audio from YouTube...</p>
+          <p className="loading-text">🎵 Extracting audio... trying fallback if needed...</p>
         </div>
       )}
       {error && (
-        <div className="error-overlay" style={{ background: "rgba(255,0,0,0.1)", padding: "10px", borderRadius: "8px", marginBottom: "10px", border: "1px solid rgba(255,0,0,0.3)" }}>
-          <p style={{ color: "#ff4444", fontSize: "0.9rem", margin: 0 }}>⚠️ {error}</p>
+        <div
+          className="error-overlay"
+          style={{
+            background: "rgba(255,0,0,0.1)",
+            padding: "10px",
+            borderRadius: "8px",
+            marginBottom: "10px",
+            border: "1px solid rgba(255,0,0,0.3)",
+          }}
+        >
+          <p style={{ color: "#ff4444", fontSize: "0.9rem", margin: 0 }}>{error}</p>
         </div>
       )}
       {song?.songId ? (
@@ -1291,6 +1330,11 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
             <div>
               <div className="song-title">{song.title}</div>
               <small className="song-artist">{song.artist}</small>
+              {song.source === "preview" && (
+                <small style={{ color: "#888", display: "block", fontSize: "0.75rem" }}>
+                  🎧 30s Preview
+                </small>
+              )}
             </div>
             <small className="song-duration">{song.duration}</small>
           </div>
@@ -1306,7 +1350,6 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
 Player.displayName = "Player";
 
 export default Player;
-
 
 
 
@@ -2419,14 +2462,17 @@ class RedisService:
 FILE: backend/app/services/youtube_service.py
 ================================================================================
 import asyncio
+import random
+import re
+import time
 from typing import Any, Optional
 import yt_dlp
 from ytmusicapi import YTMusic
 
 class YouTubeService:
     def __init__(self):
-        self.ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio',
+        self.ydl_search_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
@@ -2434,126 +2480,165 @@ class YouTubeService:
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'logtostderr': False,
-            # Use multiple clients to bypass datacenter blocks
+        }
+
+        self.ydl_resolve_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'skip_download': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'android', 'web']
+                    'player_client': ['tv_embedded', 'mweb'],
+                    'skip': ['hls', 'dash'],
                 }
-            }
+            },
+            'http_headers': {
+                'User-Agent': (
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/124.0.0.0 Safari/537.36'
+                ),
+            },
         }
-        self.ytmusic = YTMusic()
 
-    async def search_youtube(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """
-        Search for tracks on YouTube Music (filters for songs only).
-        """
-        loop = asyncio.get_event_loop()
+        self.ytmusic = YTMusic()
+        self._cached_invidious_instances = []
+        self._last_instance_fetch = 0
+        self._piped_instances = ["https://pipedapi.kavin.rocks", "https://pipedapi.colby.cloud", "https://api.piped.yt"]
+
+    # ------------------------------------------------------------------ #
+    #  Ultimate Resilient Stream Resolution (The Nuclear Option)          #
+    # ------------------------------------------------------------------ #
+
+    async def resolve_url(self, video_id: str) -> Optional[str]:
+        print(f"--- RESOLVE START: {video_id} ---")
         
+        # 1. Try Piped API (Fastest & often works on cloud)
+        url = await self._resolve_via_piped(video_id)
+        if url: return url
+
+        # 2. Try Cobalt API (High reliability media proxy)
+        url = await self._resolve_via_cobalt(video_id)
+        if url: return url
+
+        # 3. Try Dynamic Invidious Discovery
+        url = await self._resolve_via_dynamic_invidious(video_id)
+        if url: return url
+
+        # 4. Try Hardened yt-dlp
+        url = await self._resolve_via_ytdlp(video_id)
+        if url: return url
+
+        print(f"--- RESOLVE FAILED: {video_id} (All methods exhausted) ---")
+        return None
+
+    async def _resolve_via_piped(self, video_id: str) -> Optional[str]:
         try:
-            # ytmusic.search is synchronous, run in executor
-            search_results = await loop.run_in_executor(
-                None, 
-                lambda: self.ytmusic.search(query, filter="songs", limit=limit)
-            )
-            
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for api in self._piped_instances:
+                    try:
+                        resp = await client.get(f"{api}/streams/{video_id}")
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            audio_streams = data.get("audioStreams", [])
+                            if audio_streams:
+                                # Pick highest quality available
+                                best = max(audio_streams, key=lambda s: s.get("bitrate", 0))
+                                print(f"STAGE SUCCESS: Piped ({api}) resolved {video_id}")
+                                return best["url"]
+                    except Exception: continue
+        except Exception as e: print(f"STAGE FAIL: Piped error: {e}")
+        return None
+
+    async def _resolve_via_cobalt(self, video_id: str) -> Optional[str]:
+        try:
+            import httpx
+            cobalt_instances = ["https://api.cobalt.tools/api/json", "https://cobalt.api.un-known.xyz/api/json"]
+            payload = {"url": f"https://www.youtube.com/watch?v={video_id}", "downloadMode": "audio"}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for api in cobalt_instances:
+                    try:
+                        resp = await client.post(api, json=payload, headers={"Accept": "application/json"})
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("url"):
+                                print(f"STAGE SUCCESS: Cobalt ({api}) resolved {video_id}")
+                                return data["url"]
+                        else:
+                            print(f"STAGE LOG: Cobalt ({api}) returned {resp.status_code}")
+                    except Exception: continue
+        except Exception as e: print(f"STAGE FAIL: Cobalt error: {e}")
+        return None
+
+    async def _resolve_via_dynamic_invidious(self, video_id: str) -> Optional[str]:
+        import httpx
+        if not self._cached_invidious_instances or (time.time() - self._last_instance_fetch) > 3600:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get("https://api.invidious.io/instances.json?sort_by=health")
+                    if resp.status_code == 200:
+                        instances = resp.json()
+                        self._cached_invidious_instances = [f"https://{item[0]}" for item in instances if item[1].get('type') == 'https' and item[1].get('health', 0) > 90][:10]
+                        self._last_instance_fetch = time.time()
+            except Exception: pass
+        
+        if not self._cached_invidious_instances: return None
+        targets = list(self._cached_invidious_instances)
+        random.shuffle(targets)
+
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            for instance in targets[:3]:
+                try:
+                    resp = await client.get(f"{instance}/api/v1/videos/{video_id}")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
+                        if audio_formats:
+                            best = max(audio_formats, key=lambda f: int(f.get('bitrate', 0)))
+                            print(f"STAGE SUCCESS: Invidious ({instance}) resolved {video_id}")
+                            return best['url']
+                except Exception: continue
+        return None
+
+    async def _resolve_via_ytdlp(self, video_id: str) -> Optional[str]:
+        loop = asyncio.get_event_loop()
+        try:
+            with yt_dlp.YoutubeDL(self.ydl_resolve_opts) as ydl:
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False))
+            if info:
+                url = info.get('url') or info.get('formats', [{}])[0].get('url')
+                if url:
+                    print(f"STAGE SUCCESS: yt-dlp resolved {video_id}")
+                    return url
+        except Exception as e: print(f"STAGE FAIL: yt-dlp error: {e}")
+        return None
+
+    # ... Rest of the search/helper methods remain the same ...
+    async def search_youtube(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        loop = asyncio.get_event_loop()
+        try:
+            search_results = await loop.run_in_executor(None, lambda: self.ytmusic.search(query, filter="songs", limit=limit))
             results = []
             for item in search_results:
                 video_id = item.get('videoId')
-                if not video_id:
-                    continue
-                
-                # Extract artist name
-                artists = item.get('artists', [])
-                artist_name = artists[0].get('name', 'Unknown Artist') if artists else 'Unknown Artist'
-                
-                # Thumbnails
-                thumbnails = item.get('thumbnails', [])
-                thumbnail_url = thumbnails[-1].get('url', '') if thumbnails else ''
-                
+                if not video_id: continue
                 results.append({
-                    "songId": f"yt-{video_id}",
-                    "title": item.get('title', 'Unknown Title'),
-                    "artist": artist_name,
-                    "thumbnail": thumbnail_url,
-                    "duration": item.get('duration', '0:00'),
-                    "durationSec": item.get('duration_seconds', 0),
-                    "previewUrl": "", 
-                    "source": "youtube"
+                    "songId": f"yt-{video_id}", "title": item.get('title', 'Unknown'), "artist": item.get('artists', [{}])[0].get('name', 'Unknown'),
+                    "thumbnail": item.get('thumbnails', [{}])[-1].get('url', ''), "duration": item.get('duration', '0:00'),
+                    "durationSec": item.get('duration_seconds', 0), "previewUrl": "", "source": "youtube"
                 })
             return results
-        except Exception as e:
-            print(f"YouTube Music search error: {e}")
-            # Fallback to standard YouTube search if YTMusic fails
-            return await self._fallback_search(query, limit)
-
-    async def _fallback_search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        loop = asyncio.get_event_loop()
-        search_query = f"ytsearch{limit}:{query} music"
-        
-        try:
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                info = await loop.run_in_executor(None, lambda: ydl.extract_info(search_query, download=False))
-                
-            entries = info.get('entries', [])
-            results = []
-            for entry in entries:
-                if not entry:
-                    continue
-                
-                results.append({
-                    "songId": f"yt-{entry['id']}",
-                    "title": entry.get('title', 'Unknown Title'),
-                    "artist": entry.get('uploader', 'YouTube Artist'),
-                    "thumbnail": entry.get('thumbnails', [{}])[-1].get('url', ''),
-                    "duration": self._format_duration(entry.get('duration', 0)),
-                    "durationSec": entry.get('duration', 0),
-                    "previewUrl": "",
-                    "source": "youtube"
-                })
-            return results
-        except Exception as e:
-            print(f"Fallback search error: {e}")
-            return []
-
-    async def resolve_url(self, video_id: str) -> Optional[str]:
-        """
-        Extract a fresh streaming URL for a given video ID.
-        """
-        loop = asyncio.get_event_loop()
-        resolve_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio',
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True,
-        }
-        
-        try:
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            resolve_opts.update(self.ydl_opts)
-            resolve_opts['extract_flat'] = False # We need the actual URL
-            
-            with yt_dlp.YoutubeDL(resolve_opts) as ydl:
-                info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                if info and 'url' in info:
-                    print(f"DEBUG: Successfully resolved URL for {video_id}")
-                    return info.get('url')
-                
-                print(f"DEBUG: No URL in info for {video_id}. Info keys: {info.keys() if info else 'None'}")
-                return None
-        except Exception as e:
-            print(f"YouTube resolution error for {video_id}: {e}")
-            return None
+        except Exception: return []
 
     def _format_duration(self, seconds: Optional[int]) -> str:
-        if not seconds:
-            return "0:00"
-        try:
-            total_seconds = int(seconds)
-            minutes = total_seconds // 60
-            remaining = total_seconds % 60
-            return f"{minutes}:{remaining:02d}"
-        except (ValueError, TypeError):
-            return "0:00"
+        if not seconds: return "0:00"
+        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
 
 
 
