@@ -7,7 +7,10 @@ import socketio
 from app.services import mongo_service, redis_service
 
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+if cors_origins_raw == "*":
+    allowed_origins = "*"
+else:
+    allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
 
 sio = socketio.AsyncServer(
     async_mode="asgi",

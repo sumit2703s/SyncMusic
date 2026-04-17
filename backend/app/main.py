@@ -16,12 +16,17 @@ fastapi_app = FastAPI(title="Music Sync API")
 
 # Use environment variables for CORS in production
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+if cors_origins_raw == "*":
+    allowed_origins = ["*"]
+    allow_credentials = False
+else:
+    allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+    allow_credentials = True
 
 fastapi_app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
