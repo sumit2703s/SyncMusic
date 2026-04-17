@@ -1,7 +1,19 @@
 import axios from "axios";
 
-// Priority: VITE_BACKEND_URL -> VITE_SOCKET_URL -> localhost
-const baseURL = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_SOCKET_URL || "http://localhost:8000";
+const getBaseURL = () => {
+  let url = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_SOCKET_URL;
+  if (!url) {
+    const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
+    if (hostname.includes("localhost") || hostname.includes("127.0.0.1")) {
+      return "http://localhost:8000";
+    }
+    // Guess Render URL or fallback to current origin (unlikely to work but better than localhost)
+    return window.location.origin.replace("vercel.app", "onrender.com");
+  }
+  return url.startsWith("http") ? url : `${window.location.protocol}//${url}`;
+};
+
+const baseURL = getBaseURL();
 
 export const api = axios.create({
   baseURL,

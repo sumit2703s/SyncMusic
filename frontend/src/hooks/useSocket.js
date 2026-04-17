@@ -3,10 +3,27 @@ import { io } from "socket.io-client";
 
 export const useSocket = () => {
   const socket = useMemo(() => {
-    // Priority: VITE_SOCKET_URL -> VITE_BACKEND_URL -> localhost
-    const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
-    const url = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:8000`;
+    const isProd = typeof window !== "undefined" && !window.location.hostname.includes("localhost") && !window.location.hostname.includes("127.0.0.1");
     
+    let url = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_BACKEND_URL;
+    
+    if (!url) {
+      const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
+      // Only default to port 8000 if we are clearly on localhost
+      if (hostname.includes("localhost") || hostname.includes("127.0.0.1")) {
+        url = `http://${hostname}:8000`;
+      } else {
+        // In production, if variables are missing, we try to guess the Render URL or at least warn
+        console.error("VITE_SOCKET_URL/VITE_BACKEND_URL is missing in production environment variables!");
+        url = window.location.origin.replace("vercel.app", "onrender.com"); // Hail mary guess for Render common pattern
+      }
+    }
+    
+    // Ensure URL has a protocol
+    if (url && !url.startsWith("http")) {
+      url = `${window.location.protocol}//${url}`;
+    }
+
     console.log(`Connecting to socket at: ${url} (Origin: ${window.location.origin})`);
     
     return io(url, {
