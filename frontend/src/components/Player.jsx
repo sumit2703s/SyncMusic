@@ -5,6 +5,8 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
   const audioRef = useRef(null);
   const suppressEmitRef = useRef(false);
   const [resolving, setResolving] = useState(false);
+  const [error, setError] = useState("");
+  const [streamUrl, setStreamUrl] = useState("");
 
   useImperativeHandle(ref, () => ({
     play: () => {
@@ -31,10 +33,14 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
       // If song is from YouTube and needs resolution
       if (song.source === "youtube" && !song.previewUrl) {
         setResolving(true);
+        setError("");
         try {
           finalUrl = await resolveSong(song.songId);
+          if (!finalUrl) throw new Error("YouTube blocked the stream resolution.");
         } catch (error) {
           console.error("Resolution failed", error);
+          setError("YouTube blocked the request. Try a 'Short Preview' version of this song.");
+          setResolving(false);
           return;
         } finally {
           setResolving(false);
@@ -45,6 +51,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
 
       if (audio.src !== finalUrl) {
         console.log("DEBUG: Setting new source", finalUrl);
+        setStreamUrl(finalUrl);
         suppressEmitRef.current = true;
         audio.src = finalUrl;
         audio.currentTime = Number(song.timestamp || 0);
@@ -160,7 +167,12 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
       <h3>Now Playing</h3>
       {resolving && (
         <div className="resolving-overlay">
-          <p>Extracting audio from YouTube...</p>
+          <p className="loading-text">Extracting audio from YouTube...</p>
+        </div>
+      )}
+      {error && (
+        <div className="error-overlay" style={{ background: "rgba(255,0,0,0.1)", padding: "10px", borderRadius: "8px", marginBottom: "10px", border: "1px solid rgba(255,0,0,0.3)" }}>
+          <p style={{ color: "#ff4444", fontSize: "0.9rem", margin: 0 }}>⚠️ {error}</p>
         </div>
       )}
       {song?.songId ? (

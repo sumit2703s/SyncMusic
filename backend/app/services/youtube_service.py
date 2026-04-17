@@ -11,6 +11,15 @@ class YouTubeService:
             'no_warnings': True,
             'extract_flat': True,
             'skip_download': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'logtostderr': False,
+            # Use multiple clients to bypass datacenter blocks
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web']
+                }
+            }
         }
         self.ytmusic = YTMusic()
 
@@ -100,9 +109,17 @@ class YouTubeService:
         
         try:
             url = f"https://www.youtube.com/watch?v={video_id}"
+            resolve_opts.update(self.ydl_opts)
+            resolve_opts['extract_flat'] = False # We need the actual URL
+            
             with yt_dlp.YoutubeDL(resolve_opts) as ydl:
                 info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                return info.get('url')
+                if info and 'url' in info:
+                    print(f"DEBUG: Successfully resolved URL for {video_id}")
+                    return info.get('url')
+                
+                print(f"DEBUG: No URL in info for {video_id}. Info keys: {info.keys() if info else 'None'}")
+                return None
         except Exception as e:
             print(f"YouTube resolution error for {video_id}: {e}")
             return None
