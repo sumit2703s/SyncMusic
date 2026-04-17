@@ -172,7 +172,18 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange 
 
       if (song?.source === "youtube") {
         const player = ytPlayerRef.current;
-        if (!player || typeof player.getCurrentTime !== "function") return;
+        if (!player || typeof player.getCurrentTime !== "function" || typeof player.getVideoData !== "function") return;
+        
+        // TRANSITION GUARD: Check if the player is actually playing the correct video
+        const videoData = player.getVideoData();
+        const currentPlayerId = videoData ? videoData.video_id : "";
+        const targetPlayerId = song.songId.replace("yt-", "");
+
+        if (currentPlayerId !== targetPlayerId) {
+          console.log("DEBUG: Heartbeat skipped - video ID mismatch (Transitioning)");
+          return;
+        }
+
         timestamp = player.getCurrentTime();
         isPlaying = player.getPlayerState() === window.YT.PlayerState.PLAYING;
       } else {
