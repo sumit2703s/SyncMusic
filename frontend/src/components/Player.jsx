@@ -1,232 +1,240 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { searchMusic } from "../services/api";
+import { resolveSong, searchMusic } from "../services/api";
 
 const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace, onNext, isHost }, ref) => {
   const audioRef = useRef(null);
-  const ytPlayerRef = useRef(null);
   const suppressEmitRef = useRef(false);
+  const currentSongIdRef = useRef(null); // tracks which song is currently loaded
+  const [resolving, setResolving] = useState(false);
   const [error, setError] = useState("");
-  const [isYTReady, setIsYTReady] = useState(false);
-
-  // 1. Load YouTube IFrame API Script
-  useEffect(() => {
-    if (window.YT) {
-      setIsYTReady(true);
-      return;
-    }
-
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    const firstScriptTag = document.getElementsByTagName("script")[0];
-    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-
-    window.onYouTubeIframeAPIReady = () => {
-      console.log("DEBUG: YouTube IFrame API Ready");
-      setIsYTReady(true);
-    };
-  }, []);
-
-  // 2. Manage YouTube Player Lifecycle
-  useEffect(() => {
-    if (!isYTReady || song?.source !== "youtube" || !song?.songId) {
-      if (ytPlayerRef.current) {
-        console.log("DEBUG: Destroying YT Player");
-        ytPlayerRef.current.destroy();
-        ytPlayerRef.current = null;
-      }
-      return;
-    }
-
-    const videoId = song.songId.replace("yt-", "");
-    
-    // Programmatic change starting - LOCK emissions
-    suppressEmitRef.current = true;
-    
-    if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
-      console.log("DEBUG: Updating existing YT Player", videoId);
-      ytPlayerRef.current.loadVideoById({
-        videoId: videoId,
-        startSeconds: Number(song.timestamp || 0)
-      });
-      if (song.isPlaying) ytPlayerRef.current.playVideo();
-      else ytPlayerRef.current.pauseVideo();
-    } else {
-      console.log("DEBUG: Initializing new YT Player", videoId);
-      ytPlayerRef.current = new window.YT.Player("yt-player", {
-        height: "240",
-        width: "100%",
-        videoId: videoId,
-        playerVars: {
-          autoplay: 1,
-          controls: 1,
-          modestbranding: 1,
-          origin: window.location.origin,
-          playsinline: 1,
-          enablejsapi: 1
-        },
-        events: {
-          onReady: (event) => {
-            event.target.seekTo(Number(song.timestamp || 0));
-            if (song.isPlaying) event.target.playVideo();
-            else event.target.pauseVideo();
-          },
-          onStateChange: (event) => {
-            if (suppressEmitRef.current) {
-              console.log("DEBUG: YT Event Suppressed (Programmatic Change)");
-              return;
-            }
-            
-            if (event.data === window.YT.PlayerState.PLAYING) {
-              onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
-            } else if (event.data === window.YT.PlayerState.PAUSED) {
-              onPlaybackChange("pause", event.target.getCurrentTime(), song?.songId);
-            } else if (event.data === window.YT.PlayerState.ENDED) {
-              console.log("DEBUG: YT Ended reached");
-              if (isHost && onNext) onNext();
-            }
-          }
-        }
-      });
-    }
-
-    // Release look after transition settles
-    setTimeout(() => {
-      suppressEmitRef.current = false;
-    }, 2000);
-
-  }, [isYTReady, song?.songId, song?.source]);
-
-  // Handle Play/Pause changes
-  useEffect(() => {
-    if (!song?.songId) return;
-    
-    suppressEmitRef.current = true;
-    
-    if (song.source === "youtube") {
-      if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === "function") {
-        if (song.isPlaying) ytPlayerRef.current.playVideo();
-        else ytPlayerRef.current.pauseVideo();
-      }
-    } else if (audioRef.current) {
-      if (song.isPlaying) audioRef.current.play().catch(() => {});
-      else audioRef.current.pause();
-    }
-
-    setTimeout(() => {
-      suppressEmitRef.current = false;
-    }, 1000);
-  }, [song?.isPlaying, song?.songId]); // Add songId dependency
-
-  // Handle Sync Time changes
-  useEffect(() => {
-    if (!song?.songId) return;
-    
-    suppressEmitRef.current = true;
-    const targetTime = Number(song.timestamp || 0);
-
-    if (song.source === "youtube") {
-      const player = ytPlayerRef.current;
-      if (player && typeof player.getCurrentTime === "function") {
-        const diff = Math.abs(player.getCurrentTime() - targetTime);
-        if (diff > 2.0) player.seekTo(targetTime);
-      }
-    } else if (audioRef.current) {
-      const diff = Math.abs(audioRef.current.currentTime - targetTime);
-      if (diff > 2.0) audioRef.current.currentTime = targetTime;
-    }
-
-    setTimeout(() => {
-      suppressEmitRef.current = false;
-    }, 1000);
-  }, [song?.timestamp]);
 
   useImperativeHandle(ref, () => ({
-    play: () => {
-      if (song?.source === "youtube") ytPlayerRef.current?.playVideo();
-      else audioRef.current?.play().catch(() => {});
-    },
-    pause: () => {
-      if (song?.source === "youtube") ytPlayerRef.current?.pauseVideo();
-      else audioRef.current?.pause();
-    }
+    play: () => audioRef.current?.play().catch(() => { }),
+    pause: () => audioRef.current?.pause(),
+    get audio() { return audioRef.current; }
   }));
 
-  // Socket Sync Event Handler
+  // ── Core: Load a new song into <audio> whenever songId changes ───────
+  useEffect(() => {
+    if (!song?.songId || !audioRef.current) return;
+
+    // Same song already loaded — just sync play/pause & drift
+    if (currentSongIdRef.current === song.songId) {
+      const audio = audioRef.current;
+      const diff = Math.abs(audio.currentTime - Number(song.timestamp || 0));
+      if (diff > 2.0) {
+        suppressEmitRef.current = true;
+        audio.currentTime = Number(song.timestamp || 0);
+        setTimeout(() => { suppressEmitRef.current = false; }, 500);
+      }
+      if (song.isPlaying && audio.paused) audio.play().catch(() => { });
+      else if (!song.isPlaying && !audio.paused) audio.pause();
+      return;
+    }
+
+    // New song — resolve URL and load
+    const loadSong = async () => {
+      let finalUrl = song.previewUrl || "";
+
+      if (song.source === "youtube" && !finalUrl) {
+        setResolving(true);
+        setError("");
+        try {
+          finalUrl = await resolveSong(song.songId);
+          if (!finalUrl) throw new Error("No URL returned");
+        } catch (err) {
+          console.warn("YouTube resolution failed, trying preview fallback...", err);
+          try {
+            const query = `${song.title} ${song.artist}`;
+            const previews = await searchMusic(query, "preview");
+            if (previews?.length > 0) {
+              const fallback = { ...previews[0], _fallbackFor: song.songId };
+              console.log("DEBUG: Using preview fallback", fallback.title);
+              if (onSongReplace) {
+                onSongReplace(fallback);
+                setResolving(false);
+                return;
+              }
+              finalUrl = previews[0].previewUrl;
+            } else {
+              throw new Error("No preview found");
+            }
+          } catch {
+            setError("YouTube blocked this track & no preview found. Try 'Short Previews' mode.");
+            setResolving(false);
+            return;
+          }
+        } finally {
+          setResolving(false);
+        }
+      }
+
+      if (!finalUrl) return;
+
+      const audio = audioRef.current;
+      if (!audio) return;
+
+      console.log("DEBUG: Loading audio for:", song.title);
+      currentSongIdRef.current = song.songId;
+      setError("");
+      suppressEmitRef.current = true;
+
+      audio.src = finalUrl;
+      audio.currentTime = Number(song.timestamp || 0);
+      audio.load();
+
+      if (song.isPlaying) {
+        audio.play().catch((e) => console.warn("Autoplay blocked:", e));
+      } else {
+        audio.pause();
+      }
+
+      setTimeout(() => { suppressEmitRef.current = false; }, 1500);
+    };
+
+    loadSong();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song?.songId, song?.previewUrl, song?.source]);
+
+  // ── Sync play/pause state without reloading the song ─────────────────
+  useEffect(() => {
+    if (!song?.songId || !audioRef.current) return;
+    if (currentSongIdRef.current !== song.songId) return;
+    suppressEmitRef.current = true;
+    if (song.isPlaying) audioRef.current.play().catch(() => { });
+    else audioRef.current.pause();
+    setTimeout(() => { suppressEmitRef.current = false; }, 500);
+  }, [song?.isPlaying]);
+
+  // ── Seek sync ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!song?.songId || !audioRef.current) return;
+    if (currentSongIdRef.current !== song.songId) return;
+    const diff = Math.abs(audioRef.current.currentTime - Number(song.timestamp || 0));
+    if (diff > 2.0) {
+      suppressEmitRef.current = true;
+      audioRef.current.currentTime = Number(song.timestamp || 0);
+      setTimeout(() => { suppressEmitRef.current = false; }, 500);
+    }
+  }, [song?.timestamp]);
+
+  // ── Local audio events → broadcast to room ────────────────────────────
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onPlay = () => {
+      if (suppressEmitRef.current) return;
+      onPlaybackChange("play", audio.currentTime, song?.songId);
+    };
+    const onPause = () => {
+      if (suppressEmitRef.current) return;
+      onPlaybackChange("pause", audio.currentTime, song?.songId);
+    };
+    const onEnded = () => {
+      if (isHost && onNext) onNext();
+    };
+
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("ended", onEnded);
+    return () => {
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("ended", onEnded);
+    };
+  }, [onPlaybackChange, onNext, isHost, song?.songId]);
+
+  // ── Receive sync events from other room members ───────────────────────
   useEffect(() => {
     if (!socket) return;
-    
     const handleSync = ({ timestamp, isPlaying, songId }) => {
       if (songId && songId !== song?.songId) return;
       if (suppressEmitRef.current) return;
+      const audio = audioRef.current;
+      if (!audio) return;
 
       suppressEmitRef.current = true;
-      if (song?.source === "youtube" && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
-        const current = ytPlayerRef.current.getCurrentTime();
-        if (Math.abs(current - timestamp) > 1.5) ytPlayerRef.current.seekTo(timestamp);
-        if (isPlaying) ytPlayerRef.current.playVideo();
-        else ytPlayerRef.current.pauseVideo();
-      } else if (audioRef.current) {
-        const current = audioRef.current.currentTime || 0;
-        if (Math.abs(current - timestamp) > 1.2) audioRef.current.currentTime = timestamp;
-        if (isPlaying && audioRef.current.paused) audioRef.current.play().catch(() => {});
-        else if (!isPlaying && !audioRef.current.paused) audioRef.current.pause();
-      }
+      if (Math.abs(audio.currentTime - timestamp) > 1.2) audio.currentTime = timestamp;
+      if (isPlaying && audio.paused) audio.play().catch(() => { });
+      else if (!isPlaying && !audio.paused) audio.pause();
       setTimeout(() => { suppressEmitRef.current = false; }, 800);
     };
 
     socket.on("sync_time", handleSync);
     return () => socket.off("sync_time", handleSync);
-  }, [socket, song?.songId, song?.source]);
+  }, [socket, song?.songId]);
 
-  // Periodic heartbeat
+  // ── Heartbeat: report position every 5s ──────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
-      if (!roomId || suppressEmitRef.current) return;
-
-      let timestamp = 0;
-      let isPlaying = false;
-
-      if (song?.source === "youtube") {
-        const player = ytPlayerRef.current;
-        if (!player || typeof player.getCurrentTime !== "function" || typeof player.getVideoData !== "function") return;
-        
-        const videoData = player.getVideoData();
-        if (!videoData || videoData.video_id !== song.songId.replace("yt-", "")) return;
-
-        timestamp = player.getCurrentTime();
-        isPlaying = player.getPlayerState() === window.YT.PlayerState.PLAYING;
-      } else if (audioRef.current) {
-        timestamp = audioRef.current.currentTime || 0;
-        isPlaying = !audioRef.current.paused;
-      }
-
-      onSyncEmit(timestamp, isPlaying, song?.songId);
+      const audio = audioRef.current;
+      if (!audio || !roomId || suppressEmitRef.current || !song?.songId) return;
+      onSyncEmit(audio.currentTime || 0, !audio.paused, song.songId);
     }, 5000);
-
     return () => clearInterval(interval);
-  }, [roomId, onSyncEmit, song?.songId, song?.source]);
+  }, [roomId, onSyncEmit, song?.songId]);
 
   return (
     <div className="card player-card">
+      {/* Song Info */}
       <div className="now-playing">
-        <img src={song?.thumbnail || ""} alt={song?.title} />
-        <div className="song-info">
-          <div className="song-title">{song?.title || "No song playing"}</div>
-          <div className="song-artist">{song?.artist || "Add a song to start"}</div>
+        {song?.thumbnail ? (
+          <img src={song.thumbnail} alt={song?.title || "Song"} />
+        ) : (
+          <div style={{
+            width: 56, height: 56, borderRadius: 10,
+            background: "#222", flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 24
+          }}>🎵</div>
+        )}
+        <div className="song-info" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="song-title" style={{
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+          }}>
+            {song?.title || "No song playing"}
+          </div>
+          <div className="song-artist" style={{ color: "#aaa", fontSize: "0.85rem" }}>
+            {song?.artist || "Add a song to start"}
+          </div>
         </div>
       </div>
-      
-      <div className="player-viewport">
-        <div id="yt-player" className={song?.source === "youtube" ? "" : "hidden"} />
-        <audio 
-          ref={audioRef} 
-          controls 
-          className={`audio-player ${song?.source === "youtube" ? "hidden" : ""}`}
-          onPlay={() => { if (!suppressEmitRef.current) onPlaybackChange("play", audioRef.current.currentTime, song?.songId); }}
-          onPause={() => { if (!suppressEmitRef.current) onPlaybackChange("pause", audioRef.current.currentTime, song?.songId); }}
-          onEnded={() => { if (isHost && onNext) onNext(); }}
-        />
-      </div>
+
+      {/* Status messages */}
+      {resolving && (
+        <p style={{ color: "#aaa", fontSize: "0.85rem", margin: "10px 0 4px" }}>
+          ⏳ Loading audio...
+        </p>
+      )}
+      {error && (
+        <div style={{
+          background: "rgba(255,60,60,0.1)",
+          border: "1px solid rgba(255,60,60,0.3)",
+          borderRadius: "8px", padding: "8px 12px", margin: "8px 0",
+        }}>
+          <p style={{ color: "#ff5555", fontSize: "0.85rem", margin: 0 }}>⚠️ {error}</p>
+        </div>
+      )}
+
+      {/* Clean audio player — NO YouTube iframe anywhere */}
+      <audio
+        ref={audioRef}
+        controls
+        className="audio-player"
+        style={{
+          width: "100%",
+          marginTop: "12px",
+          display: song?.songId ? "block" : "none",
+          borderRadius: "8px",
+        }}
+      />
+
+      {!song?.songId && !resolving && (
+        <p className="muted" style={{ marginTop: "14px" }}>
+          Add a song to start listening together.
+        </p>
+      )}
     </div>
   );
 });
