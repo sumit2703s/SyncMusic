@@ -127,6 +127,13 @@ export default function App() {
     };
   }, [socket, roomId]);
 
+  useEffect(() => {
+    const keepAlive = setInterval(() => {
+      fetch(import.meta.env.VITE_BACKEND_URL + "/health").catch(() => {})
+    }, 25000)
+    return () => clearInterval(keepAlive)
+  }, []);
+
   // ── Song controls ─────────────────────────────────────────────────────
   const playSelectedSong = useCallback((song) => {
     if (!roomId || !song?.songId) return;
