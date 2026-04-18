@@ -239,28 +239,20 @@ export default defineConfig({
 ================================================================================
 FILE: frontend/src/App.jsx
 ================================================================================
-import { useEffect, useMemo, useRef, useState } from "react";
-
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Player from "./components/Player";
 import Queue from "./components/Queue";
 import Room from "./components/Room";
 import Users from "./components/Users";
 import { useSocket } from "./hooks/useSocket";
 import {
-  addSongToQueue,
-  createRoom,
-  joinRoom,
-  kickMember,
-  nextSongInRoom,
-  pauseSongInRoom,
-  playSongInRoom,
-  prevSongInRoom,
-  searchMusic,
+  addSongToQueue, createRoom, joinRoom, kickMember,
+  pauseSongInRoom, playSongInRoom, searchMusic,
 } from "./services/api";
 
 const randomId = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
-const App = () => {
+export default function App() {
   const socket = useSocket();
   const [userId] = useState(() => randomId());
   const [username, setUsername] = useState("");
@@ -269,346 +261,198 @@ const App = () => {
   const [queue, setQueue] = useState([]);
   const [users, setUsers] = useState([]);
   const [state, setState] = useState({});
-  const [searchQuery, setSearchQuery] = useState("");
-  const [results, setResults] = useState([]);
   const [roomLoading, setRoomLoading] = useState(false);
   const [roomError, setRoomError] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
+  const pendingRoomJoin = useRef(null);
+  const playerRef = useRef(null);
 
   const hostId = useMemo(() => state?.hostId || "", [state]);
+  const isHost = userId === hostId;
 
+  // ── Join / Create Room ───────────────────────────────────────────────
   const enterRoom = async (fn, inputUsername, inputRoomId, mode) => {
     const cleanUsername = inputUsername?.trim() || `Guest-${String(userId).slice(0, 4)}`;
     const cleanRoomId = inputRoomId?.trim() || "";
+    if (mode === "join" && !cleanRoomId) { setRoomError("Enter a Room ID to join."); return; }
 
-    if (mode === "join" && !cleanRoomId) {
-      setRoomError("Enter a Room ID to join.");
-      return;
-    }
-
-    setRoomError("");
-    setRoomLoading(true);
+    setRoomError(""); setRoomLoading(true);
     try {
       setUsername(cleanUsername);
       const data = await fn({ roomId: cleanRoomId, userId, username: cleanUsername });
       const nextRoomId = data.roomId || cleanRoomId;
-      if (!nextRoomId) {
-        setRoomError("Could not determine room ID. Please try again.");
-        return;
-      }
-      setRoomId(nextRoomId);
-      setJoined(true);
-
-      if (data.state) {
-        setState(data.state);
-      }
-      if (data.queue) {
-        setQueue(data.queue);
-      }
-      if (data.users) {
-        setUsers(data.users);
-      }
+      if (!nextRoomId) { setRoomError("Could not determine room ID."); return; }
+      setRoomId(nextRoomId); setJoined(true);
+      if (data.state) setState(data.state);
+      if (data.queue) setQueue(data.queue);
+      if (data.users) setUsers(data.users);
 
       const joinPayload = { roomId: nextRoomId, userId, username: cleanUsername };
-      const joinCallback = (response) => {
-        if (response?.error) {
-          console.error("DEBUG: join_room failed", response);
-          setRoomError(response.error || "Failed to join room via socket.");
-          return;
-        }
-        console.log("DEBUG: join_room ack", response);
-        setState(response.state || {});
-        setQueue(response.queue || []);
-        setUsers(response.users || []);
+      const joinCallback = (res) => {
+        if (res?.error) { setRoomError(res.error); return; }
+        setState(res.state || {}); setQueue(res.queue || []); setUsers(res.users || []);
       };
-
-      if (socket.connected) {
-        socket.emit("join_room", joinPayload, joinCallback);
-      } else {
-        pendingRoomJoin.current = { payload: joinPayload, callback: joinCallback };
-        console.log("DEBUG: Socket not connected yet, pending join_room set", joinPayload);
-      }
-    } catch (error) {
-      const detail = error?.response?.data?.detail;
-      setRoomError(typeof detail === "string" ? detail : "Failed to connect to server. Check backend and try again.");
-    } finally {
-      setRoomLoading(false);
-    }
+      if (socket.connected) socket.emit("join_room", joinPayload, joinCallback);
+      else pendingRoomJoin.current = { payload: joinPayload, callback: joinCallback };
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setRoomError(typeof detail === "string" ? detail : "Failed to connect. Check backend.");
+    } finally { setRoomLoading(false); }
   };
 
-  const handleCreate = (inputUsername, wantedRoomId) => enterRoom(createRoom, inputUsername, wantedRoomId, "create");
-  const handleJoin = (inputUsername, wantedRoomId) => enterRoom(joinRoom, inputUsername, wantedRoomId, "join");
-
-  const [connected, setConnected] = useState(false);
-  const [connectionError, setConnectionError] = useState("");
-  const pendingRoomJoin = useRef(null);
-
+  // ── Socket listeners ──────────────────────────────────────────────────
   useEffect(() => {
-    console.log("DEBUG: Setting up socket listeners. Initial status:", socket.connected);
-    
-    if (socket.connected) {
-      setConnected(true);
-      setConnectionError("");
-    }
+    if (socket.connected) { setConnected(true); setConnectionError(""); }
 
     socket.on("connect", () => {
-      console.log("DEBUG: Socket 'connect' event. ID:", socket.id);
-      setConnected(true);
-      setConnectionError("");
+      setConnected(true); setConnectionError("");
       if (pendingRoomJoin.current) {
-        console.log("DEBUG: Emitting pending join_room after socket connect", pendingRoomJoin.current.payload);
-        socket.emit("join_room", pendingRoomJoin.current.payload, (response) => {
-          pendingRoomJoin.current.callback?.(response);
+        socket.emit("join_room", pendingRoomJoin.current.payload, (res) => {
+          pendingRoomJoin.current.callback?.(res);
           pendingRoomJoin.current = null;
         });
       }
     });
+    socket.on("connect_error", (err) => { setConnected(false); setConnectionError(err?.message || "Connection error"); });
+    socket.on("disconnect", (reason) => { setConnected(false); setConnectionError(`Disconnected: ${reason}`); });
 
-    socket.on("connect_error", (err) => {
-      const msg = err?.message || err?.toString() || "Connection error";
-      console.error("DEBUG: Socket 'connect_error':", msg, err);
-      setConnected(false);
-      setConnectionError(msg);
-    });
-
-    socket.on("connect_timeout", () => {
-      setConnectionError("Connection timed out");
-      setConnected(false);
-    });
-
-    socket.on("error", (err) => {
-      console.error("DEBUG: Socket 'error':", err);
-      setConnectionError(err?.message || "Internal error");
-    });
-
-    socket.on("disconnect", (reason) => {
-      console.warn("DEBUG: Socket 'disconnect' event. Reason:", reason);
-      setConnected(false);
-      if (reason === "io server disconnect") {
-        setConnectionError("Server closed the connection");
-      } else if (reason === "transport close") {
-        setConnectionError("Lost connection to server");
-      } else {
-        setConnectionError(`Disconnected: ${reason}`);
+    socket.on("room_state", (p) => {
+      setState(p.state || {}); setQueue(p.queue || []); setUsers(p.users || []);
+      if (p.syncTime && p.state?.songId) {
+        socket.emit("sync_time", { roomId: p.roomId, songId: p.state.songId, timestamp: p.syncTime, isPlaying: p.state?.isPlaying });
       }
     });
-    
-    socket.on("room_state", (payload) => {
-      setState(payload.state || {});
-      setQueue(payload.queue || []);
-      setUsers(payload.users || []);
-      if (payload.state?.hostId) setHostId(payload.state.hostId);
-      if (payload.syncTime && payload.state?.songId) {
-        socket.emit("sync_time", {
-          roomId: payload.roomId,
-          timestamp: payload.syncTime,
-          isPlaying: payload.state?.isPlaying,
-        });
-      }
+    socket.on("queue_updated", ({ queue: q }) => setQueue(q || []));
+    socket.on("user_joined", ({ user: u }) => {
+      if (!u) return;
+      setUsers((prev) => prev.some((x) => x.userId === u.userId) ? prev : [...prev, u]);
     });
-
-    socket.on("queue_updated", ({ queue: nextQueue }) => setQueue(nextQueue || []));
-    socket.on("user_joined", ({ user: joinedUser }) => {
-      if (!joinedUser) return;
-      setUsers((prev) => {
-        if (prev.some((entry) => entry.userId === joinedUser.userId)) return prev;
-        return [...prev, joinedUser];
-      });
-    });
-    socket.on("user_left", ({ users: nextUsers }) => setUsers(nextUsers || []));
-    socket.on("song_changed", ({ state: nextState, queue: nextQueue }) => {
-      setState(nextState || {});
-      if (nextState?.hostId) setHostId(nextState.hostId);
-      if (nextQueue) setQueue(nextQueue);
-    });
-    socket.on("song_paused", ({ state: nextState }) => setState(nextState || {}));
-    socket.on("song_restarted", ({ state: nextState }) => setState(nextState || {}));
-    socket.on("host_changed", ({ hostId: nextHost }) => setState((prev) => ({ ...prev, hostId: nextHost })));
-    socket.on("kicked", ({ roomId: kickedRoomId }) => {
-      if (kickedRoomId && kickedRoomId !== roomId) return;
-      alert("You were removed from the room by host.");
-      setJoined(false);
-      setRoomId("");
-      setQueue([]);
-      setUsers([]);
-      setState({});
+    socket.on("user_left", ({ users: u }) => setUsers(u || []));
+    socket.on("song_changed", ({ state: s, queue: q }) => { setState(s || {}); if (q) setQueue(q); });
+    socket.on("song_paused", ({ state: s }) => setState(s || {}));
+    socket.on("song_restarted", ({ state: s }) => setState(s || {}));
+    socket.on("host_changed", ({ hostId: h }) => setState((p) => ({ ...p, hostId: h })));
+    socket.on("queue_empty", () => setState((p) => ({ ...p, songId: null, isPlaying: false, title: null, artist: null, thumbnail: null })));
+    socket.on("kicked", ({ roomId: kr }) => {
+      if (kr && kr !== roomId) return;
+      alert("You were removed from the room.");
+      setJoined(false); setRoomId(""); setQueue([]); setUsers([]); setState({});
     });
 
     return () => {
-      socket.off("room_state");
-      socket.off("queue_updated");
-      socket.off("user_joined");
-      socket.off("user_left");
-      socket.off("song_changed");
-      socket.off("song_paused");
-      socket.off("song_restarted");
-      socket.off("host_changed");
-      socket.off("kicked");
+      ["room_state", "queue_updated", "user_joined", "user_left", "song_changed",
+        "song_paused", "song_restarted", "host_changed", "queue_empty", "kicked"].forEach((e) => socket.off(e));
     };
   }, [socket, roomId]);
 
+  // ── Song controls ─────────────────────────────────────────────────────
+  const playSelectedSong = useCallback((song) => {
+    if (!roomId || !song?.songId) return;
+    socket.emit("play_song", { roomId, song, timestamp: 0 });
+  }, [roomId, socket]);
+
+  const goToNextSong = useCallback(() => {
+    if (!roomId) return;
+    socket.emit("next_song", { roomId });
+  }, [roomId, socket]);
+
+  const goToPrevSong = useCallback(() => {
+    if (!roomId) return;
+    socket.emit("prev_song", { roomId });
+  }, [roomId, socket]);
+
+  const handleTogglePlay = () => {
+    if (!roomId) return;
+    if (!state.songId && queue.length > 0) { playSelectedSong(queue[0]); return; }
+    if (!state.songId) return;
+    const nextPlaying = !state.isPlaying;
+    setState((p) => ({ ...p, isPlaying: nextPlaying }));
+    if (nextPlaying) playerRef.current?.play();
+    else playerRef.current?.pause();
+  };
+
+  const onSyncEmit = useCallback((timestamp, isPlaying, songId) => {
+    if (!roomId || !songId) return;
+    socket.emit("sync_time", { roomId, songId, timestamp, isPlaying });
+  }, [roomId, socket]);
+
+  const onPlaybackChange = useCallback((type, timestamp, songId) => {
+    if (!roomId || !songId) return;
+    if (type === "play") {
+      playSongInRoom(roomId, { ...state, songId, durationSec: state.durationSec || 30 }, timestamp).catch(console.error);
+    } else {
+      pauseSongInRoom(roomId, timestamp).catch(console.error);
+    }
+  }, [roomId, state]);
+
+  const handleSongReplace = useCallback((fallbackSong) => {
+    if (!roomId || !fallbackSong?.songId) return;
+    socket.emit("play_song", { roomId, song: fallbackSong, timestamp: 0 });
+  }, [roomId, socket]);
+
+  // ── Search ────────────────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState("");
+  const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [addingSongId, setAddingSongId] = useState("");
-  const [searchSource, setSearchSource] = useState("full"); // Default to full songs as requested
+  const [searchSource, setSearchSource] = useState("full");
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setSearching(true);
-    try {
-      const data = await searchMusic(searchQuery.trim(), searchSource);
-      setResults(data);
-    } finally {
-      setSearching(false);
-    }
+    try { setResults(await searchMusic(searchQuery.trim(), searchSource)); }
+    finally { setSearching(false); }
   };
 
   const addSong = (song, onAdded) => {
-    if (!roomId) {
-      alert("Room ID is missing. Please create or join a room before adding songs.");
-      return;
-    }
-
+    if (!roomId) { alert("Join a room first."); return; }
     if (!song?.songId || addingSongId) return;
     setAddingSongId(song.songId);
-    console.log(`DEBUG: Adding song to room ${roomId} via socket ${socket.id}`, song);
     addSongToQueue(roomId, song)
       .then((result) => {
-        if (Array.isArray(result?.queue)) {
-          setQueue(result.queue);
-        } else {
-          setQueue((prev) => [...prev, song]);
-        }
-
+        if (Array.isArray(result?.queue)) setQueue(result.queue);
+        else setQueue((p) => [...p, song]);
         if (!state.songId && socket.connected) {
-          console.log("DEBUG: Triggering initial play");
-          socket.emit("play_song", { roomId, song, timestamp: 0 }, (response) => {
-            if (response?.error) {
-              console.error("DEBUG: play_song failed", response);
-            }
-          });
+          socket.emit("play_song", { roomId, song, timestamp: 0 });
         }
-
-        setResults([]);
-        onAdded();
+        setResults([]); onAdded();
       })
-      .catch((error) => {
-        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-        alert(`Failed to add song: ${detail}`);
-      })
-      .finally(() => {
-        setAddingSongId("");
-      });
-  };
-
-  const playSelectedSong = (song) => {
-    if (!roomId || !song?.songId) return;
-    playSongInRoom(roomId, song, 0)
-      .catch((error) => {
-        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-        alert(`Failed to play song: ${detail}`);
-      });
+      .catch((e) => alert(`Failed to add: ${e?.response?.data?.detail || e?.message}`))
+      .finally(() => setAddingSongId(""));
   };
 
   const removeMember = (member) => {
     if (!roomId || !member?.userId) return;
     kickMember(roomId, userId, member.userId)
-      .then((response) => {
-        if (Array.isArray(response?.users)) {
-          setUsers(response.users);
-        }
-      })
-      .catch((error) => {
-        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-        alert(`Failed to remove member: ${detail}`);
-      });
-  };
-
-  const onSyncEmit = (timestamp, isPlaying, songId) => {
-    if (!roomId || !songId) return;
-    socket.emit("sync_time", { roomId, songId, timestamp, isPlaying });
-  };
-
-  const onPlaybackChange = (type, timestamp, songId) => {
-    if (!roomId) return;
-    if (type === "play") {
-      if (!songId) return;
-      playSongInRoom(
-        roomId,
-        {
-          ...state,
-          songId: songId, // Ensure we use the reported songId
-          durationSec: state.durationSec || 30,
-        },
-        timestamp
-      ).catch((error) => {
-        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-        console.error("Play failed:", detail);
-      });
-    } else {
-      pauseSongInRoom(roomId, timestamp, songId).catch((error) => {
-        const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-        console.error("Pause failed:", detail);
-      });
-    }
-  };
-
-  const goToNextSong = () => {
-    if (!roomId) return;
-    nextSongInRoom(roomId).catch((error) => {
-      const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-      console.error("Next failed:", detail);
-    });
-  };
-
-  const handleSongReplace = (newSong) => {
-    if (!roomId || !newSong?.songId) return;
-    console.log("DEBUG: Auto-replacing song due to resolution failure", newSong);
-    playSongInRoom(roomId, newSong, 0).catch((err) => console.error("Auto-replace failed", err));
-  };
-
-  const playerRef = useRef(null);
-
-  const handleTogglePlay = () => {
-    if (!roomId) return;
-    
-    // If no song is loaded but we have a queue, play the first song
-    if (!state.songId && queue.length > 0) {
-      playSelectedSong(queue[0]);
-      return;
-    }
-
-    if (!state.songId) return;
-
-    const nextIsPlaying = !state.isPlaying;
-    
-    // Optimistic UI update
-    setState(prev => ({ ...prev, isPlaying: nextIsPlaying }));
-
-    if (nextIsPlaying) {
-      playerRef.current?.play();
-    } else {
-      playerRef.current?.pause();
-    }
+      .then((r) => { if (Array.isArray(r?.users)) setUsers(r.users); })
+      .catch((e) => alert(`Failed: ${e?.response?.data?.detail || e?.message}`));
   };
 
   if (!joined) {
-    return <Room onCreate={handleCreate} onJoin={handleJoin} loading={roomLoading} error={roomError} />;
+    return <Room onCreate={(u, r) => enterRoom(createRoom, u, r, "create")} onJoin={(u, r) => enterRoom(joinRoom, u, r, "join")} loading={roomLoading} error={roomError} />;
   }
 
   return (
     <div className="app">
-      <header>
-        <div className="row align-center">
-          <div className="row align-center">
-            <h2>Room: {roomId}</h2>
-            <span className={`status-dot ${connected ? "online" : "offline"}`} title={connected ? "Connected" : "Disconnected"}></span>
-            {connectionError && <small className="error-text" style={{ marginLeft: "10px" }}>{connectionError}</small>}
-            {!connected && !connectionError && <small className="muted" style={{ marginLeft: "10px" }}>Connecting to backend...</small>}
+      {/* Header */}
+      <header className="app-header">
+        <div className="header-left">
+          <span className="app-logo">◈ SyncMusic</span>
+          <div className="room-pill">
+            <span className={`live-dot ${connected ? "live-dot--on" : "live-dot--off"}`} />
+            <span className="room-id-label">Room: {roomId}</span>
           </div>
         </div>
-        <div className="chip">{username}</div>
+        <div className="header-right">
+          {connectionError && <span className="err-badge">{connectionError}</span>}
+          <div className="user-pill">{username.slice(0, 1).toUpperCase()}<span>{username}</span></div>
+        </div>
       </header>
-      <main>
-        <section className="left">
+
+      <div className="app-body">
+        {/* Left: Player */}
+        <aside className="panel panel--player">
           <Player
             ref={playerRef}
             socket={socket}
@@ -618,67 +462,73 @@ const App = () => {
             onPlaybackChange={onPlaybackChange}
             onSongReplace={handleSongReplace}
             onNext={goToNextSong}
-            isHost={userId === hostId}
+            isHost={isHost}
           />
-        </section>
-        <section className="right">
+          {/* Transport */}
+          <div className="transport">
+            <button className="transport-btn" onClick={goToPrevSong} title="Previous">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" /></svg>
+            </button>
+            <button
+              className={`transport-btn transport-btn--play ${state.isPlaying ? "transport-btn--pause" : ""}`}
+              onClick={handleTogglePlay}
+              disabled={!state.songId && queue.length === 0}
+            >
+              {state.isPlaying
+                ? <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6zm8-14v14h4V5z" /></svg>
+                : <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+              }
+            </button>
+            <button className="transport-btn" onClick={goToNextSong} title="Next">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm2-8.14 4.72 3.14L8 16.14V9.86zM16 6h2v12h-2z" /></svg>
+            </button>
+          </div>
+
+          {/* Users */}
           <Users users={users} hostId={hostId} currentUserId={userId} onRemoveMember={removeMember} />
+        </aside>
+
+        {/* Right: Queue + Search */}
+        <main className="panel panel--queue">
           <Queue
             queue={queue}
             currentSongId={state.songId}
             onPlaySong={playSelectedSong}
             onSearch={(close) => (
               <div className="search-container">
-                <div className="source-toggle row">
-                  <button 
-                    className={searchSource === "preview" ? "active" : ""} 
-                    onClick={() => setSearchSource("preview")}
-                  >
-                    Short Previews
-                  </button>
-                  <button 
-                    className={searchSource === "full" ? "active" : ""} 
-                    onClick={() => setSearchSource("full")}
-                  >
-                    Full Songs (YouTube)
-                  </button>
+                <div className="source-toggle">
+                  <button className={searchSource === "full" ? "active" : ""} onClick={() => setSearchSource("full")}>Full Songs</button>
+                  <button className={searchSource === "preview" ? "active" : ""} onClick={() => setSearchSource("preview")}>30s Previews</button>
                 </div>
-                <div className="search-input-group row">
+                <div className="search-row">
                   <input
+                    className="search-input"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                    placeholder={searchSource === "full" ? "Search full songs (YouTube)..." : "Search previews (Deezer)..."}
+                    placeholder={`Search ${searchSource === "full" ? "songs" : "previews"}...`}
                   />
-                  <button onClick={handleSearch} disabled={searching} className="primary-btn">
-                    {searching ? "..." : "Search"}
+                  <button className="search-btn" onClick={handleSearch} disabled={searching}>
+                    {searching ? "…" : "Search"}
                   </button>
                 </div>
-                <div className="results">
-                  {results.length === 0 && searchQuery && !searching && (
-                    <div className="muted" style={{ padding: "20px", textAlign: "center", background: "#111", borderRadius: "10px" }}>
-                      <p>No results found in <b>{searchSource === "full" ? "YouTube" : "Previews"}</b>.</p>
-                      <button 
-                        className="secondary" 
-                        style={{ marginTop: "10px" }}
-                        onClick={() => {
-                          setSearchSource(searchSource === "full" ? "preview" : "full");
-                          setTimeout(handleSearch, 100);
-                        }}
-                      >
-                        Try searching in {searchSource === "full" ? "Previews" : "Full Songs"}
-                      </button>
-                    </div>
-                  )}
+                {results.length === 0 && searchQuery && !searching && (
+                  <p className="no-results">No results. Try switching to {searchSource === "full" ? "Previews" : "Full Songs"}.</p>
+                )}
+                <div className="result-list">
                   {results.map((song) => (
                     <div key={song.songId} className="result-item">
-                      <img src={song.thumbnail} alt={song.title} />
-                      <div style={{ flex: 1 }}>
-                        <div className="song-title">{song.title}</div>
-                        <small className="muted">{song.artist}</small>
+                      <img src={song.thumbnail} alt={song.title} className="result-thumb" />
+                      <div className="result-info">
+                        <div className="result-title">{song.title}</div>
+                        <div className="result-artist">{song.artist}</div>
                       </div>
-                      <button disabled={Boolean(addingSongId)} onClick={() => addSong(song, close)}>
-                        {addingSongId === song.songId ? "Adding..." : "Add"}
+                      <button
+                        className="add-btn"
+                        disabled={Boolean(addingSongId)}
+                        onClick={() => addSong(song, close)}
+                      >
+                        {addingSongId === song.songId ? "…" : "+"}
                       </button>
                     </div>
                   ))}
@@ -686,40 +536,11 @@ const App = () => {
               </div>
             )}
           />
-        </section>
-      </main>
-      <footer className="player-bar">
-        <button
-          className="control-btn secondary"
-          onClick={() =>
-            prevSongInRoom(roomId).catch((error) => {
-              const detail = error?.response?.data?.detail || error?.message || "Unknown error";
-              alert(`Prev failed: ${detail}`);
-            })
-          }
-        >
-          Prev
-        </button>
-        <button
-          className={`control-btn play-pause-btn ${state.isPlaying ? "playing" : ""}`}
-          onClick={handleTogglePlay}
-          disabled={!state.songId && queue.length === 0}
-        >
-          {state.isPlaying ? "Pause" : "Play"}
-        </button>
-        <button
-          className="control-btn secondary"
-          onClick={goToNextSong}
-        >
-          Next
-        </button>
-      </footer>
+        </main>
+      </div>
     </div>
   );
-};
-
-export default App;
-
+}
 
 
 ================================================================================
@@ -741,291 +562,1018 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 ================================================================================
 FILE: frontend/src/styles.css
 ================================================================================
+/* ── Google Font ── */
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+/* ── Tokens ── */
 :root {
-  --bg-black: #000000;
-  --bg-dark: #0a0a0a;
-  --bg-card: #141414;
-  --bg-hover: #22c55e;
-  --text-white: #ffffff;
-  --text-grey: #a0a0a0;
-  --primary-green: #1db954;
-  --border-grey: #282828;
+  --black: #000000;
+  --surface: #0d0d0d;
+  --card: #141414;
+  --card-hover: #1a1a1a;
+  --border: #232323;
+  --border-hi: #2e2e2e;
+  --text: #f5f5f5;
+  --muted: #737373;
+  --accent: #1db954;
+  --accent-dim: #1db95420;
+  --accent-glow: 0 0 20px #1db95440;
+  --danger: #e5534b;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font-head: 'Syne', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
 }
 
-* {
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+html {
+  font-size: 15px;
+}
+
 body {
-  background-color: var(--bg-black);
-  color: var(--text-white);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--black);
+  color: var(--text);
+  font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  min-height: 100vh;
 }
 
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   APP SHELL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .app {
-  padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
-  padding-bottom: 120px; /* Space for fixed bottom bar */
-}
-
-/* Header */
-header {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ━━ Header ━━ */
+.app-header {
+  display: flex;
   align-items: center;
-  margin-bottom: 30px;
-  padding: 10px 0;
+  justify-content: space-between;
+  padding: 14px 28px;
+  background: #000;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
-header h1 {
-  font-size: 1.5rem;
-  font-weight: 800;
-  letter-spacing: -1px;
-  color: var(--primary-green);
-}
-
-.chip {
-  background: var(--bg-card);
-  padding: 6px 14px;
-  border-radius: 999px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  border: 1px solid var(--border-grey);
-}
-
-/* Landing */
-.landing {
-  max-width: 380px;
-  margin: 80px auto;
-  background: var(--bg-card);
-  padding: 40px;
-  border-radius: 12px;
-  border: 1px solid var(--border-grey);
-  text-align: center;
-}
-
-.landing h2 {
-  margin-bottom: 24px;
-}
-
-/* Main Grid */
-main {
-  display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 24px;
-}
-
-.card {
-  background: var(--bg-card);
-  padding: 24px;
-  border-radius: 12px;
-  border: 1px solid var(--border-grey);
-}
-
-/* Player Card */
-.now-playing {
+.header-left {
   display: flex;
   align-items: center;
   gap: 20px;
-  margin-bottom: 24px;
 }
 
-.now-playing img {
-  width: 64px;
-  height: 64px;
-  border-radius: 4px;
-  background: #222;
+.app-logo {
+  font-family: var(--font-head);
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -0.5px;
 }
 
-.song-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.song-artist {
-  color: var(--text-grey);
-  font-size: 0.95rem;
-}
-
-.player-viewport {
-  margin-top: 10px;
-  width: 100%;
-}
-
-#yt-player {
-  background: #000;
-  border-radius: 8px;
-  aspect-ratio: 16 / 9;
-}
-
-.audio-player {
-  width: 100%;
-  margin-top: 10px;
-  filter: invert(100%) hue-rotate(180deg) brightness(1.5); /* Make standard audio look dark */
-}
-
-/* Inputs & Buttons */
-input {
-  width: 100%;
-  padding: 14px 18px;
-  background: var(--bg-dark);
-  border: 1px solid var(--border-grey);
-  border-radius: 8px;
-  color: white;
-  font-size: 1rem;
-  margin-bottom: 12px;
-  outline: none;
-}
-
-input:focus {
-  border-color: var(--primary-green);
-}
-
-button {
-  padding: 12px 24px;
-  border-radius: 8px;
-  border: none;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: inherit;
-}
-
-button.primary, .primary-btn {
-  background: var(--primary-green);
-  color: black;
-}
-
-button:hover {
-  transform: scale(1.02);
-  filter: brightness(1.1);
-}
-
-button.secondary {
-  background: #333;
-  color: white;
-}
-
-/* Queue and Results */
-.queue-list, .results {
+.room-pill {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 15px;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 0.82rem;
+  color: var(--muted);
 }
 
-.queue-item, .result-item {
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.live-dot--on {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulse 2s infinite;
+}
+
+.live-dot--off {
+  background: var(--danger);
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.room-id-label {
+  font-weight: 500;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.header-right {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px;
+}
+
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 14px 5px 8px;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.user-pill> :first-child {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #000;
+  font-weight: 800;
+  font-size: 0.75rem;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.err-badge {
+  background: #e5534b22;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.78rem;
+}
+
+/* ━━ Body grid ━━ */
+.app-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 0;
+  height: calc(100vh - 57px);
+  overflow: hidden;
+}
+
+.panel {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.panel--player {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 24px 20px 20px;
+}
+
+.panel--queue {
+  background: var(--black);
+  padding: 24px 24px 40px;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   PLAYER CARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.player-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Album art */
+.player-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.album-art-wrap {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  flex-shrink: 0;
+}
+
+.album-art {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius);
+  object-fit: cover;
+  display: block;
+  box-shadow: 0 8px 40px #0008;
+}
+
+.album-art--empty {
+  background: var(--card);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+}
+
+.album-art--empty span {
+  font-size: 3rem;
+  opacity: 0.2;
+}
+
+.album-art-overlay {
+  position: absolute;
+  inset: 0;
+  background: #000a;
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #ffffff30;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Song meta */
+.player-meta {
+  text-align: center;
+  width: 100%;
+}
+
+.player-title {
+  font-family: var(--font-head);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.player-artist {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.source-badge {
+  display: inline-block;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid #1db95430;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  letter-spacing: 0.4px;
+}
+
+.source-badge--preview {
+  background: #ffffff10;
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+/* Progress */
+.progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.progress-track {
+  position: relative;
+  height: 4px;
+  background: var(--border-hi);
+  border-radius: 999px;
+  overflow: visible;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  pointer-events: none;
+  transition: width 0.1s linear;
+}
+
+.progress-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 6px #0008;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.progress-wrap:hover .progress-thumb {
+  opacity: 1;
+}
+
+.progress-wrap:hover .progress-track {
+  height: 5px;
+}
+
+.progress-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Volume */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vol-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 4px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.vol-btn:hover {
+  color: var(--text);
+  transform: none;
+  filter: none;
+}
+
+.vol-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--border-hi);
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* Error */
+.player-error {
+  background: #e5534b18;
+  border: 1px solid #e5534b40;
+  color: var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 0.82rem;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TRANSPORT CONTROLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 4px 0;
+}
+
+.transport-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  transition: color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+
+.transport-btn:hover {
+  color: var(--text);
+  background: var(--card);
+  transform: none;
+  filter: none;
+}
+
+.transport-btn:disabled {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.transport-btn--play {
+  width: 52px;
+  height: 52px;
+  background: #fff !important;
+  color: #000 !important;
+  border-radius: 50%;
+  box-shadow: 0 4px 20px #ffffff30;
+}
+
+.transport-btn--play:hover {
+  background: #e0e0e0 !important;
+  transform: scale(1.04) !important;
+  filter: none;
+}
+
+.transport-btn--pause {
+  background: #fff !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   USERS PANEL (inside left panel)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.card.users-card {
+  background: none;
+  border: none;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 8px;
+}
+
+.card.users-card h3 {
+  font-family: var(--font-head);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #000;
+  font-weight: 800;
+  font-size: 0.75rem;
+  display: grid;
+  place-items: center;
+}
+
+.user-item span {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.remove-btn {
+  background: none !important;
+  border: 1px solid var(--border) !important;
+  color: var(--muted) !important;
+  font-size: 0.72rem !important;
+  padding: 3px 10px !important;
+  border-radius: 999px !important;
+}
+
+.remove-btn:hover {
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
+  background: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   QUEUE CARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.card.queue-card {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.card.queue-card h3 {
+  font-family: var(--font-head);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.row.space-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s;
+}
+
+.queue-item:hover {
+  background: var(--card-hover);
+}
+
+.queue-item img {
+  width: 42px;
+  height: 42px;
   border-radius: 6px;
-  background: transparent;
-  transition: background 0.1s;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 
-.queue-item:hover, .result-item:hover {
-  background: #1a1a1a;
+.queue-item>div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
 }
 
-.queue-item img, .result-item img {
-  width: 44px;
-  height: 44px;
-  border-radius: 4px;
+.queue-item>div:nth-child(2)>div {
+  font-size: 0.88rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-item>div:nth-child(2)>small {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.queue-item small {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.queue-item .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-item button.secondary {
+  background: none !important;
+  border: 1px solid var(--border) !important;
+  color: var(--muted) !important;
+  font-size: 0.75rem !important;
+  padding: 3px 12px !important;
+  border-radius: 999px !important;
+  white-space: nowrap;
+}
+
+.queue-item button.secondary:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: none !important;
+  transform: none;
+  filter: none;
+}
+
+.queue-item button.secondary:disabled {
+  opacity: 0.5;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SEARCH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.search-modal {
+  margin-top: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+button.close {
+  float: right;
+  background: none !important;
+  border: none !important;
+  color: var(--muted) !important;
+  font-size: 1.2rem;
+  padding: 2px 6px !important;
+  cursor: pointer;
+}
+
+.search-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .source-toggle {
   display: flex;
-  background: #1a1a1a;
-  padding: 4px;
-  border-radius: 8px;
-  margin-bottom: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 2px;
 }
 
 .source-toggle button {
   flex: 1;
-  background: transparent;
-  color: var(--text-grey);
-  font-size: 0.85rem;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-weight: 500;
 }
 
 .source-toggle button.active {
-  background: #333;
-  color: white;
+  background: var(--card-hover);
+  color: var(--text);
 }
 
-/* Fixed Bottom Bar */
-.player-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 90px;
-  background: #000;
-  border-top: 1px solid var(--border-grey);
-  padding: 0 40px;
+.source-toggle button:hover {
+  transform: none;
+  filter: none;
+  color: var(--text);
+}
+
+.search-row {
   display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 30px;
-  z-index: 9999;
+  gap: 8px;
 }
 
-.control-btn {
+.search-input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-family: var(--font-body);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
+.search-btn {
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  font-weight: 700;
+  font-family: var(--font-body);
+  cursor: pointer;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.search-btn:hover {
+  filter: brightness(1.1);
+  transform: none;
+}
+
+.search-btn:disabled {
+  opacity: 0.6;
+}
+
+.no-results {
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 16px 0;
+}
+
+.result-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 380px;
+  overflow-y: auto;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.result-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s;
+  cursor: default;
+}
+
+.result-item:hover {
+  background: var(--card-hover);
+}
+
+.result-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.result-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-title {
+  font-size: 0.88rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-artist {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.add-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  border: 1px solid #1db95440;
+  color: var(--accent);
+  font-size: 1.2rem;
+  font-weight: 300;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.add-btn:hover {
+  background: var(--accent);
+  color: #000;
+  transform: none;
+  filter: none;
+}
+
+.add-btn:disabled {
+  opacity: 0.4;
+}
+
+/* Queue "Add Song" button */
+.card.queue-card .row.space-between button {
+  background: var(--accent) !important;
+  color: #000 !important;
+  border: none !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+  padding: 7px 16px !important;
+  border-radius: 999px !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   LANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.landing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.landing-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.landing-logo {
+  font-family: var(--font-head);
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.landing-sub {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.landing-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 12px 16px;
+  font-size: 0.95rem;
+  font-family: var(--font-body);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.landing-input:focus {
+  border-color: var(--accent);
+}
+
+.landing-btns {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.landing-btn-primary {
+  flex: 1;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+.landing-btn-primary:hover {
+  filter: brightness(1.1);
+  transform: none;
+}
+
+.landing-btn-secondary {
+  flex: 1;
+  background: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+.landing-btn-secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: none;
+  filter: none;
+}
+
+.landing-btn-primary:disabled,
+.landing-btn-secondary:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.landing-error {
+  color: var(--danger);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   UTILITIES & GLOBALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+button {
+  font-family: var(--font-body);
+}
+
+input {
+  font-family: var(--font-body);
+}
+
+img {
+  display: block;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ━━ Scrollbar ━━ */
+::-webkit-scrollbar {
+  width: 5px;
+}
+
+::-webkit-scrollbar-track {
   background: transparent;
-  color: white;
-  font-size: 1.1rem;
 }
 
-.play-pause-btn {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: white !important;
-  color: black;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
 }
 
-/* Responsiveness */
-@media (max-width: 850px) {
-  main {
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@media (max-width: 860px) {
+  .app-body {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
-  
-  .app {
-    padding: 16px;
-    padding-bottom: 120px;
+
+  .panel--player {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 20px 16px;
   }
-  
-  .player-bar {
-    padding: 0 20px;
-    gap: 20px;
+
+  .album-art-wrap {
+    width: 160px;
+    height: 160px;
   }
-  
-  .song-title { font-size: 1.1rem; }
+
+  .panel--queue {
+    padding: 20px 16px;
+  }
 }
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-left: 10px;
-}
-.status-dot.online { background: var(--primary-green); box-shadow: 0 0 10px var(--primary-green); }
-.status-dot.offline { background: #ff4141; }
-
-.hidden { display: none !important; }
-.muted { color: var(--text-grey); }
-.error-text { color: #ff5555; font-size: 0.85rem; }
-
 
 
 ================================================================================
@@ -1089,233 +1637,250 @@ export const useSocket = () => {
 ================================================================================
 FILE: frontend/src/components/Player.jsx
 ================================================================================
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { searchMusic } from "../services/api";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from "react";
+import { resolveSong } from "../services/api";
 
 const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace, onNext, isHost }, ref) => {
   const audioRef = useRef(null);
-  const ytPlayerRef = useRef(null);
   const suppressEmitRef = useRef(false);
+  const loadedSongIdRef = useRef(null);
+  const [resolving, setResolving] = useState(false);
   const [error, setError] = useState("");
-  const [isYTReady, setIsYTReady] = useState(false);
-
-  // 1. Load YouTube IFrame API Script
-  useEffect(() => {
-    if (window.YT) {
-      setIsYTReady(true);
-      return;
-    }
-
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    const firstScriptTag = document.getElementsByTagName("script")[0];
-    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-
-    window.onYouTubeIframeAPIReady = () => {
-      console.log("DEBUG: YouTube IFrame API Ready");
-      setIsYTReady(true);
-    };
-  }, []);
-
-  // 2. Manage YouTube Player Lifecycle
-  useEffect(() => {
-    if (!isYTReady || song?.source !== "youtube" || !song?.songId) {
-      if (ytPlayerRef.current) {
-        console.log("DEBUG: Destroying YT Player");
-        ytPlayerRef.current.destroy();
-        ytPlayerRef.current = null;
-      }
-      return;
-    }
-
-    const videoId = song.songId.replace("yt-", "");
-    
-    // Programmatic change starting - LOCK emissions
-    suppressEmitRef.current = true;
-    
-    if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
-      console.log("DEBUG: Updating existing YT Player", videoId);
-      ytPlayerRef.current.loadVideoById({
-        videoId: videoId,
-        startSeconds: Number(song.timestamp || 0)
-      });
-      if (song.isPlaying) ytPlayerRef.current.playVideo();
-      else ytPlayerRef.current.pauseVideo();
-    } else {
-      console.log("DEBUG: Initializing new YT Player", videoId);
-      ytPlayerRef.current = new window.YT.Player("yt-player", {
-        height: "240",
-        width: "100%",
-        videoId: videoId,
-        playerVars: {
-          autoplay: 1,
-          controls: 1,
-          modestbranding: 1,
-          origin: window.location.origin,
-          playsinline: 1,
-          enablejsapi: 1
-        },
-        events: {
-          onReady: (event) => {
-            event.target.seekTo(Number(song.timestamp || 0));
-            if (song.isPlaying) event.target.playVideo();
-            else event.target.pauseVideo();
-          },
-          onStateChange: (event) => {
-            if (suppressEmitRef.current) {
-              console.log("DEBUG: YT Event Suppressed (Programmatic Change)");
-              return;
-            }
-            
-            if (event.data === window.YT.PlayerState.PLAYING) {
-              onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
-            } else if (event.data === window.YT.PlayerState.PAUSED) {
-              onPlaybackChange("pause", event.target.getCurrentTime(), song?.songId);
-            } else if (event.data === window.YT.PlayerState.ENDED) {
-              console.log("DEBUG: YT Ended reached");
-              if (isHost && onNext) onNext();
-            }
-          }
-        }
-      });
-    }
-
-    // Release look after transition settles
-    setTimeout(() => {
-      suppressEmitRef.current = false;
-    }, 2000);
-
-  }, [isYTReady, song?.songId, song?.source]);
-
-  // Handle Play/Pause changes
-  useEffect(() => {
-    if (!song?.songId) return;
-    
-    suppressEmitRef.current = true;
-    
-    if (song.source === "youtube") {
-      if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === "function") {
-        if (song.isPlaying) ytPlayerRef.current.playVideo();
-        else ytPlayerRef.current.pauseVideo();
-      }
-    } else if (audioRef.current) {
-      if (song.isPlaying) audioRef.current.play().catch(() => {});
-      else audioRef.current.pause();
-    }
-
-    setTimeout(() => {
-      suppressEmitRef.current = false;
-    }, 1000);
-  }, [song?.isPlaying, song?.songId]); // Add songId dependency
-
-  // Handle Sync Time changes
-  useEffect(() => {
-    if (!song?.songId) return;
-    
-    suppressEmitRef.current = true;
-    const targetTime = Number(song.timestamp || 0);
-
-    if (song.source === "youtube") {
-      const player = ytPlayerRef.current;
-      if (player && typeof player.getCurrentTime === "function") {
-        const diff = Math.abs(player.getCurrentTime() - targetTime);
-        if (diff > 2.0) player.seekTo(targetTime);
-      }
-    } else if (audioRef.current) {
-      const diff = Math.abs(audioRef.current.currentTime - targetTime);
-      if (diff > 2.0) audioRef.current.currentTime = targetTime;
-    }
-
-    setTimeout(() => {
-      suppressEmitRef.current = false;
-    }, 1000);
-  }, [song?.timestamp]);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
 
   useImperativeHandle(ref, () => ({
-    play: () => {
-      if (song?.source === "youtube") ytPlayerRef.current?.playVideo();
-      else audioRef.current?.play().catch(() => {});
-    },
-    pause: () => {
-      if (song?.source === "youtube") ytPlayerRef.current?.pauseVideo();
-      else audioRef.current?.pause();
-    }
+    play: () => audioRef.current?.play().catch(() => { }),
+    pause: () => audioRef.current?.pause(),
   }));
 
-  // Socket Sync Event Handler
+  // ── Load new song ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!song?.songId || !audioRef.current) return;
+
+    // Same song already loaded — just sync state
+    if (loadedSongIdRef.current === song.songId) {
+      const audio = audioRef.current;
+      const diff = Math.abs(audio.currentTime - Number(song.timestamp || 0));
+      if (diff > 2.0) {
+        suppressEmitRef.current = true;
+        audio.currentTime = Number(song.timestamp || 0);
+        setTimeout(() => { suppressEmitRef.current = false; }, 500);
+      }
+      if (song.isPlaying && audio.paused) audio.play().catch(() => { });
+      else if (!song.isPlaying && !audio.paused) audio.pause();
+      return;
+    }
+
+    const loadSong = async () => {
+      // Preview songs have a direct URL
+      let finalUrl = song.previewUrl || "";
+
+      // YouTube songs: resolve full stream URL from backend
+      if (song.source === "youtube" && !finalUrl) {
+        setResolving(true);
+        setError("");
+        try {
+          finalUrl = await resolveSong(song.songId);
+          if (!finalUrl) throw new Error("Could not resolve stream");
+        } catch (err) {
+          console.error("Stream resolution failed:", err);
+          setError("Could not load this track. Try another song.");
+          setResolving(false);
+          return;
+        } finally {
+          setResolving(false);
+        }
+      }
+
+      if (!finalUrl || !audioRef.current) return;
+
+      const audio = audioRef.current;
+      loadedSongIdRef.current = song.songId;
+      setError("");
+      suppressEmitRef.current = true;
+
+      audio.src = finalUrl;
+      audio.currentTime = Number(song.timestamp || 0);
+      audio.volume = isMuted ? 0 : volume;
+      audio.load();
+
+      if (song.isPlaying) {
+        audio.play().catch((e) => console.warn("Autoplay blocked:", e));
+      }
+
+      setTimeout(() => { suppressEmitRef.current = false; }, 1500);
+    };
+
+    loadSong();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song?.songId, song?.previewUrl, song?.source]);
+
+  // ── Sync play/pause ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!audioRef.current || !song?.songId || loadedSongIdRef.current !== song.songId) return;
+    suppressEmitRef.current = true;
+    if (song.isPlaying) audioRef.current.play().catch(() => { });
+    else audioRef.current.pause();
+    setTimeout(() => { suppressEmitRef.current = false; }, 500);
+  }, [song?.isPlaying]);
+
+  // ── Seek sync ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!audioRef.current || !song?.songId || loadedSongIdRef.current !== song.songId) return;
+    const diff = Math.abs(audioRef.current.currentTime - Number(song.timestamp || 0));
+    if (diff > 2.0) {
+      suppressEmitRef.current = true;
+      audioRef.current.currentTime = Number(song.timestamp || 0);
+      setTimeout(() => { suppressEmitRef.current = false; }, 500);
+    }
+  }, [song?.timestamp]);
+
+  // ── Audio element events ──────────────────────────────────────────────
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onPlay = () => { if (!suppressEmitRef.current) onPlaybackChange("play", audio.currentTime, song?.songId); };
+    const onPause = () => { if (!suppressEmitRef.current) onPlaybackChange("pause", audio.currentTime, song?.songId); };
+    const onEnded = () => { if (isHost && onNext) onNext(); };
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onDurationChange = () => setDuration(audio.duration || 0);
+
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("durationchange", onDurationChange);
+    return () => {
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("durationchange", onDurationChange);
+    };
+  }, [onPlaybackChange, onNext, isHost, song?.songId]);
+
+  // ── Socket sync ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
-    
     const handleSync = ({ timestamp, isPlaying, songId }) => {
       if (songId && songId !== song?.songId) return;
       if (suppressEmitRef.current) return;
-
+      const audio = audioRef.current;
+      if (!audio) return;
       suppressEmitRef.current = true;
-      if (song?.source === "youtube" && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
-        const current = ytPlayerRef.current.getCurrentTime();
-        if (Math.abs(current - timestamp) > 1.5) ytPlayerRef.current.seekTo(timestamp);
-        if (isPlaying) ytPlayerRef.current.playVideo();
-        else ytPlayerRef.current.pauseVideo();
-      } else if (audioRef.current) {
-        const current = audioRef.current.currentTime || 0;
-        if (Math.abs(current - timestamp) > 1.2) audioRef.current.currentTime = timestamp;
-        if (isPlaying && audioRef.current.paused) audioRef.current.play().catch(() => {});
-        else if (!isPlaying && !audioRef.current.paused) audioRef.current.pause();
-      }
+      if (Math.abs(audio.currentTime - timestamp) > 1.2) audio.currentTime = timestamp;
+      if (isPlaying && audio.paused) audio.play().catch(() => { });
+      else if (!isPlaying && !audio.paused) audio.pause();
       setTimeout(() => { suppressEmitRef.current = false; }, 800);
     };
-
     socket.on("sync_time", handleSync);
     return () => socket.off("sync_time", handleSync);
-  }, [socket, song?.songId, song?.source]);
+  }, [socket, song?.songId]);
 
-  // Periodic heartbeat
+  // ── Heartbeat ─────────────────────────────────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
-      if (!roomId || suppressEmitRef.current) return;
-
-      let timestamp = 0;
-      let isPlaying = false;
-
-      if (song?.source === "youtube") {
-        const player = ytPlayerRef.current;
-        if (!player || typeof player.getCurrentTime !== "function" || typeof player.getVideoData !== "function") return;
-        
-        const videoData = player.getVideoData();
-        if (!videoData || videoData.video_id !== song.songId.replace("yt-", "")) return;
-
-        timestamp = player.getCurrentTime();
-        isPlaying = player.getPlayerState() === window.YT.PlayerState.PLAYING;
-      } else if (audioRef.current) {
-        timestamp = audioRef.current.currentTime || 0;
-        isPlaying = !audioRef.current.paused;
-      }
-
-      onSyncEmit(timestamp, isPlaying, song?.songId);
+      const audio = audioRef.current;
+      if (!audio || !roomId || suppressEmitRef.current || !song?.songId) return;
+      onSyncEmit(audio.currentTime || 0, !audio.paused, song.songId);
     }, 5000);
-
     return () => clearInterval(interval);
-  }, [roomId, onSyncEmit, song?.songId, song?.source]);
+  }, [roomId, onSyncEmit, song?.songId]);
+
+  // ── UI Helpers ────────────────────────────────────────────────────────
+  const formatTime = (s) => {
+    if (!s || isNaN(s)) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  const handleSeek = (e) => {
+    const audio = audioRef.current;
+    if (!audio || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = (e.clientX - rect.left) / rect.width;
+    const newTime = ratio * duration;
+    suppressEmitRef.current = true;
+    audio.currentTime = newTime;
+    setCurrentTime(newTime);
+    onPlaybackChange("play", newTime, song?.songId);
+    setTimeout(() => { suppressEmitRef.current = false; }, 500);
+  };
+
+  const handleVolumeChange = (e) => {
+    const v = parseFloat(e.target.value);
+    setVolume(v);
+    if (audioRef.current) audioRef.current.volume = v;
+    setIsMuted(v === 0);
+  };
+
+  const toggleMute = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const next = !isMuted;
+    setIsMuted(next);
+    audio.volume = next ? 0 : volume;
+  };
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const isPlaying = song?.isPlaying;
 
   return (
-    <div className="card player-card">
-      <div className="now-playing">
-        <img src={song?.thumbnail || ""} alt={song?.title} />
-        <div className="song-info">
-          <div className="song-title">{song?.title || "No song playing"}</div>
-          <div className="song-artist">{song?.artist || "Add a song to start"}</div>
+    <div className="player-card">
+      {/* Hidden audio element — does ALL the work */}
+      <audio ref={audioRef} preload="auto" />
+
+      {/* Album Art + Song Info */}
+      <div className="player-hero">
+        <div className="album-art-wrap">
+          {song?.thumbnail
+            ? <img className="album-art" src={song.thumbnail} alt={song.title} />
+            : <div className="album-art album-art--empty"><span>♪</span></div>
+          }
+          {resolving && <div className="album-art-overlay"><div className="spinner" /></div>}
+        </div>
+        <div className="player-meta">
+          <div className="player-title">{song?.title || "Nothing playing"}</div>
+          <div className="player-artist">{song?.artist || "Add a song to begin"}</div>
+          {song?.source === "youtube" && !resolving && !error && song?.songId && (
+            <span className="source-badge">Full Track</span>
+          )}
+          {song?.source === "preview" && (
+            <span className="source-badge source-badge--preview">30s Preview</span>
+          )}
         </div>
       </div>
-      
-      <div className="player-viewport">
-        <div id="yt-player" className={song?.source === "youtube" ? "" : "hidden"} />
-        <audio 
-          ref={audioRef} 
-          controls 
-          className={`audio-player ${song?.source === "youtube" ? "hidden" : ""}`}
-          onPlay={() => { if (!suppressEmitRef.current) onPlaybackChange("play", audioRef.current.currentTime, song?.songId); }}
-          onPause={() => { if (!suppressEmitRef.current) onPlaybackChange("pause", audioRef.current.currentTime, song?.songId); }}
-          onEnded={() => { if (isHost && onNext) onNext(); }}
+
+      {/* Error */}
+      {error && <div className="player-error">⚠ {error}</div>}
+
+      {/* Progress Bar */}
+      <div className="progress-wrap" onClick={handleSeek}>
+        <div className="progress-track">
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+          <div className="progress-thumb" style={{ left: `${progress}%` }} />
+        </div>
+        <div className="progress-times">
+          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(duration)}</span>
+        </div>
+      </div>
+
+      {/* Volume */}
+      <div className="volume-row">
+        <button className="vol-btn" onClick={toggleMute}>
+          {isMuted || volume === 0 ? "🔇" : volume < 0.5 ? "🔉" : "🔊"}
+        </button>
+        <input
+          className="vol-slider"
+          type="range" min="0" max="1" step="0.02"
+          value={isMuted ? 0 : volume}
+          onChange={handleVolumeChange}
         />
       </div>
     </div>
@@ -1324,7 +1889,6 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
 
 Player.displayName = "Player";
 export default Player;
-
 
 
 ================================================================================
@@ -1393,29 +1957,40 @@ const Room = ({ onCreate, onJoin, loading = false, error = "" }) => {
 
   return (
     <div className="landing">
-      <h1>Music Sync</h1>
-      <p>Listen together in real time.</p>
-      <input
-        placeholder="Your username"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-      />
-      <input placeholder="Room ID (for join)" value={roomId} onChange={(e) => setRoomId(e.target.value)} />
-      {error ? <p className="error-text">{error}</p> : null}
-      <div className="row">
-        <button disabled={loading} onClick={() => onCreate(username, roomId)}>
-          {loading ? "Please wait..." : "Create Room"}
-        </button>
-        <button className="secondary" disabled={loading} onClick={() => onJoin(username, roomId)}>
-          {loading ? "Please wait..." : "Join Room"}
-        </button>
+      <div className="landing-card">
+        <div>
+          <div className="landing-logo">◈ SyncMusic</div>
+          <p className="landing-sub">Listen together, in perfect sync.</p>
+        </div>
+        <input
+          className="landing-input"
+          placeholder="Your username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onCreate(username, roomId)}
+        />
+        <input
+          className="landing-input"
+          placeholder="Room ID (leave blank to create new)"
+          value={roomId}
+          onChange={(e) => setRoomId(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && (roomId ? onJoin(username, roomId) : onCreate(username, roomId))}
+        />
+        {error && <p className="landing-error">{error}</p>}
+        <div className="landing-btns">
+          <button className="landing-btn-primary" disabled={loading} onClick={() => onCreate(username, roomId)}>
+            {loading ? "Please wait…" : "Create Room"}
+          </button>
+          <button className="landing-btn-secondary" disabled={loading} onClick={() => onJoin(username, roomId)}>
+            {loading ? "Please wait…" : "Join Room"}
+          </button>
+        </div>
       </div>
     </div>
   );
 };
 
 export default Room;
-
 
 
 ================================================================================
@@ -2452,185 +3027,342 @@ class RedisService:
 ================================================================================
 FILE: backend/app/services/youtube_service.py
 ================================================================================
+"""
+YouTube Service — Multi-layer stream resolution
+================================================
+Layer 1: Piped API          (fastest, no yt-dlp needed, works on cloud)
+Layer 2: Invidious API      (dynamic instance discovery, good fallback)
+Layer 3: yt-dlp po_token    (uses tv_embedded which is least blocked)
+Layer 4: yt-dlp web         (last resort)
+
+Search: ytmusicapi → yt-dlp fallback
+"""
+
 import asyncio
 import random
-import re
 import time
 from typing import Any, Optional
+
 import yt_dlp
 from ytmusicapi import YTMusic
 
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.colby.cloud",
+    "https://api.piped.yt",
+    "https://piped-api.garudalinux.org",
+]
+
+HARDCODED_INVIDIOUS = [
+    "https://invidious.nerdvpn.de",
+    "https://iv.datura.network",
+    "https://invidious.privacyredirect.com",
+    "https://invidious.fdn.fr",
+]
+
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+
 class YouTubeService:
     def __init__(self):
+        # Search opts — extract_flat=True, no stream URL needed
         self.ydl_search_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-            'skip_download': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'logtostderr': False,
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True,
+            "skip_download": True,
+            "nocheckcertificate": True,
+            "ignoreerrors": True,
         }
 
-        self.ydl_resolve_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'skip_download': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': False,
-            'logtostderr': False,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['tv_embedded', 'mweb'],
-                    'skip': ['hls', 'dash'],
+        # Resolve opts — tv_embedded client is least restricted on server IPs
+        self.ydl_resolve_opts_tv = {
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "skip_download": True,
+            "nocheckcertificate": True,
+            "ignoreerrors": False,
+            "http_headers": BROWSER_HEADERS,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["tv_embedded"],
+                    "skip": ["hls", "dash"],
                 }
             },
-            'http_headers': {
-                'User-Agent': (
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/124.0.0.0 Safari/537.36'
-                ),
+        }
+
+        # Web client fallback
+        self.ydl_resolve_opts_web = {
+            **self.ydl_resolve_opts_tv,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web"],
+                    "skip": ["hls", "dash"],
+                }
             },
         }
 
         self.ytmusic = YTMusic()
-        self._cached_invidious_instances = []
-        self._last_instance_fetch = 0
-        self._piped_instances = ["https://pipedapi.kavin.rocks", "https://pipedapi.colby.cloud", "https://api.piped.yt"]
+        self._invidious_cache: list[str] = []
+        self._invidious_fetched_at: float = 0
 
-    # ------------------------------------------------------------------ #
-    #  Ultimate Resilient Stream Resolution (The Nuclear Option)          #
-    # ------------------------------------------------------------------ #
+    # -----------------------------------------------------------------------
+    # Public: Search
+    # -----------------------------------------------------------------------
 
-    async def resolve_url(self, video_id: str) -> Optional[str]:
-        print(f"--- RESOLVE START: {video_id} ---")
-        
-        # 1. Try Piped API (Fastest & often works on cloud)
-        url = await self._resolve_via_piped(video_id)
-        if url: return url
-
-        # 2. Try Cobalt API (High reliability media proxy)
-        url = await self._resolve_via_cobalt(video_id)
-        if url: return url
-
-        # 3. Try Dynamic Invidious Discovery
-        url = await self._resolve_via_dynamic_invidious(video_id)
-        if url: return url
-
-        # 4. Try Hardened yt-dlp
-        url = await self._resolve_via_ytdlp(video_id)
-        if url: return url
-
-        print(f"--- RESOLVE FAILED: {video_id} (All methods exhausted) ---")
-        return None
-
-    async def _resolve_via_piped(self, video_id: str) -> Optional[str]:
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                for api in self._piped_instances:
-                    try:
-                        resp = await client.get(f"{api}/streams/{video_id}")
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            audio_streams = data.get("audioStreams", [])
-                            if audio_streams:
-                                # Pick highest quality available
-                                best = max(audio_streams, key=lambda s: s.get("bitrate", 0))
-                                print(f"STAGE SUCCESS: Piped ({api}) resolved {video_id}")
-                                return best["url"]
-                    except Exception: continue
-        except Exception as e: print(f"STAGE FAIL: Piped error: {e}")
-        return None
-
-    async def _resolve_via_cobalt(self, video_id: str) -> Optional[str]:
-        try:
-            import httpx
-            cobalt_instances = ["https://api.cobalt.tools/api/json", "https://cobalt.api.un-known.xyz/api/json"]
-            payload = {"url": f"https://www.youtube.com/watch?v={video_id}", "downloadMode": "audio"}
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                for api in cobalt_instances:
-                    try:
-                        resp = await client.post(api, json=payload, headers={"Accept": "application/json"})
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            if data.get("url"):
-                                print(f"STAGE SUCCESS: Cobalt ({api}) resolved {video_id}")
-                                return data["url"]
-                        else:
-                            print(f"STAGE LOG: Cobalt ({api}) returned {resp.status_code}")
-                    except Exception: continue
-        except Exception as e: print(f"STAGE FAIL: Cobalt error: {e}")
-        return None
-
-    async def _resolve_via_dynamic_invidious(self, video_id: str) -> Optional[str]:
-        import httpx
-        if not self._cached_invidious_instances or (time.time() - self._last_instance_fetch) > 3600:
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get("https://api.invidious.io/instances.json?sort_by=health")
-                    if resp.status_code == 200:
-                        instances = resp.json()
-                        self._cached_invidious_instances = [f"https://{item[0]}" for item in instances if item[1].get('type') == 'https' and item[1].get('health', 0) > 90][:10]
-                        self._last_instance_fetch = time.time()
-            except Exception: pass
-        
-        if not self._cached_invidious_instances: return None
-        targets = list(self._cached_invidious_instances)
-        random.shuffle(targets)
-
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            for instance in targets[:3]:
-                try:
-                    resp = await client.get(f"{instance}/api/v1/videos/{video_id}")
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-                        if audio_formats:
-                            best = max(audio_formats, key=lambda f: int(f.get('bitrate', 0)))
-                            print(f"STAGE SUCCESS: Invidious ({instance}) resolved {video_id}")
-                            return best['url']
-                except Exception: continue
-        return None
-
-    async def _resolve_via_ytdlp(self, video_id: str) -> Optional[str]:
-        loop = asyncio.get_event_loop()
-        try:
-            with yt_dlp.YoutubeDL(self.ydl_resolve_opts) as ydl:
-                info = await loop.run_in_executor(None, lambda: ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False))
-            if info:
-                url = info.get('url') or info.get('formats', [{}])[0].get('url')
-                if url:
-                    print(f"STAGE SUCCESS: yt-dlp resolved {video_id}")
-                    return url
-        except Exception as e: print(f"STAGE FAIL: yt-dlp error: {e}")
-        return None
-
-    # ... Rest of the search/helper methods remain the same ...
     async def search_youtube(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         loop = asyncio.get_event_loop()
         try:
-            search_results = await loop.run_in_executor(None, lambda: self.ytmusic.search(query, filter="songs", limit=limit))
-            results = []
-            for item in search_results:
-                video_id = item.get('videoId')
-                if not video_id: continue
-                results.append({
-                    "songId": f"yt-{video_id}", "title": item.get('title', 'Unknown'), "artist": item.get('artists', [{}])[0].get('name', 'Unknown'),
-                    "thumbnail": item.get('thumbnails', [{}])[-1].get('url', ''), "duration": item.get('duration', '0:00'),
-                    "durationSec": item.get('duration_seconds', 0), "previewUrl": "", "source": "youtube"
+            results = await loop.run_in_executor(
+                None, lambda: self.ytmusic.search(query, filter="songs", limit=limit)
+            )
+            out = []
+            for item in results:
+                vid = item.get("videoId")
+                if not vid:
+                    continue
+                artists = item.get("artists", [])
+                thumbs = item.get("thumbnails", [])
+                out.append({
+                    "songId": f"yt-{vid}",
+                    "title": item.get("title", "Unknown"),
+                    "artist": artists[0].get("name", "Unknown") if artists else "Unknown",
+                    "thumbnail": thumbs[-1].get("url", "") if thumbs else "",
+                    "duration": item.get("duration", "0:00"),
+                    "durationSec": item.get("duration_seconds", 0),
+                    "previewUrl": "",
+                    "source": "youtube",
                 })
-            return results
-        except Exception: return []
+            return out
+        except Exception as e:
+            print(f"YTMusic search error: {e}")
+            return await self._fallback_search(query, limit)
 
-    def _format_duration(self, seconds: Optional[int]) -> str:
-        if not seconds: return "0:00"
-        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+    async def _fallback_search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        loop = asyncio.get_event_loop()
+        try:
+            with yt_dlp.YoutubeDL(self.ydl_search_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                )
+            out = []
+            for e in (info.get("entries") or []):
+                if not e:
+                    continue
+                thumbs = e.get("thumbnails") or [{}]
+                out.append({
+                    "songId": f"yt-{e['id']}",
+                    "title": e.get("title", "Unknown"),
+                    "artist": e.get("uploader", "Unknown"),
+                    "thumbnail": thumbs[-1].get("url", ""),
+                    "duration": self._fmt(e.get("duration", 0)),
+                    "durationSec": e.get("duration", 0),
+                    "previewUrl": "",
+                    "source": "youtube",
+                })
+            return out
+        except Exception as e:
+            print(f"Fallback search error: {e}")
+            return []
 
+    # -----------------------------------------------------------------------
+    # Public: Resolve stream URL
+    # -----------------------------------------------------------------------
+
+    async def resolve_url(self, video_id: str) -> Optional[str]:
+        """
+        Try every layer in order. Return the first working audio URL.
+        Layers run concurrently where possible to reduce latency.
+        """
+        print(f"[RESOLVE] Starting for {video_id}")
+
+        # Layer 1 + 2 in parallel (both are HTTP, fast)
+        piped_task = asyncio.create_task(self._via_piped(video_id))
+        invidious_task = asyncio.create_task(self._via_invidious(video_id))
+
+        # Wait for Piped first (usually fastest)
+        piped_url = await piped_task
+        if piped_url:
+            invidious_task.cancel()
+            print(f"[RESOLVE] Piped success: {video_id}")
+            return piped_url
+
+        invidious_url = await invidious_task
+        if invidious_url:
+            print(f"[RESOLVE] Invidious success: {video_id}")
+            return invidious_url
+
+        # Layer 3: yt-dlp tv_embedded
+        url = await self._via_ytdlp(video_id, self.ydl_resolve_opts_tv, "tv_embedded")
+        if url:
+            return url
+
+        # Layer 4: yt-dlp web client
+        url = await self._via_ytdlp(video_id, self.ydl_resolve_opts_web, "web")
+        if url:
+            return url
+
+        print(f"[RESOLVE] ALL LAYERS FAILED for {video_id}")
+        return None
+
+    # -----------------------------------------------------------------------
+    # Layer 1: Piped
+    # -----------------------------------------------------------------------
+
+    async def _via_piped(self, video_id: str) -> Optional[str]:
+        try:
+            import httpx
+            instances = PIPED_INSTANCES.copy()
+            random.shuffle(instances)
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                for api in instances:
+                    try:
+                        resp = await client.get(f"{api}/streams/{video_id}")
+                        if resp.status_code != 200:
+                            continue
+                        data = resp.json()
+                        streams = data.get("audioStreams", [])
+                        if streams:
+                            best = max(streams, key=lambda s: s.get("bitrate", 0))
+                            url = best.get("url")
+                            if url:
+                                print(f"[PIPED] OK via {api}")
+                                return url
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"[PIPED] Error: {e}")
+        return None
+
+    # -----------------------------------------------------------------------
+    # Layer 2: Invidious (dynamic discovery + hardcoded fallback)
+    # -----------------------------------------------------------------------
+
+    async def _via_invidious(self, video_id: str) -> Optional[str]:
+        try:
+            import httpx
+            instances = await self._get_invidious_instances()
+
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                for instance in instances[:5]:
+                    try:
+                        resp = await client.get(f"{instance}/api/v1/videos/{video_id}")
+                        if resp.status_code != 200:
+                            continue
+                        data = resp.json()
+                        audio_formats = [
+                            f for f in data.get("adaptiveFormats", [])
+                            if "audio" in f.get("type", "") and f.get("url")
+                        ]
+                        if audio_formats:
+                            best = max(audio_formats, key=lambda f: int(f.get("bitrate", 0)))
+                            print(f"[INVIDIOUS] OK via {instance}")
+                            return best["url"]
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"[INVIDIOUS] Error: {e}")
+        return None
+
+    async def _get_invidious_instances(self) -> list[str]:
+        """Fetch healthy Invidious instances, cached for 1 hour."""
+        now = time.time()
+        if self._invidious_cache and (now - self._invidious_fetched_at) < 3600:
+            return self._invidious_cache
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get("https://api.invidious.io/instances.json?sort_by=health")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    instances = [
+                        f"https://{item[0]}"
+                        for item in data
+                        if item[1].get("type") == "https" and item[1].get("health", 0) > 80
+                    ][:8]
+                    if instances:
+                        self._invidious_cache = instances
+                        self._invidious_fetched_at = now
+                        return instances
+        except Exception:
+            pass
+
+        # Fallback to hardcoded list
+        shuffled = HARDCODED_INVIDIOUS.copy()
+        random.shuffle(shuffled)
+        return shuffled
+
+    # -----------------------------------------------------------------------
+    # Layer 3 & 4: yt-dlp
+    # -----------------------------------------------------------------------
+
+    async def _via_ytdlp(self, video_id: str, opts: dict, label: str) -> Optional[str]:
+        loop = asyncio.get_event_loop()
+        yt_url = f"https://www.youtube.com/watch?v={video_id}"
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(yt_url, download=False)
+                )
+            if not info:
+                return None
+
+            # Direct URL
+            if info.get("url"):
+                print(f"[YTDLP/{label}] OK via direct url")
+                return info["url"]
+
+            # Best audio-only format
+            formats = info.get("formats") or []
+            audio = [
+                f for f in formats
+                if f.get("acodec") != "none"
+                and f.get("vcodec") in (None, "none", "")
+                and f.get("url")
+            ]
+            if audio:
+                best = max(audio, key=lambda f: f.get("abr") or 0)
+                print(f"[YTDLP/{label}] OK via formats")
+                return best["url"]
+
+            print(f"[YTDLP/{label}] No usable URL found")
+        except Exception as e:
+            print(f"[YTDLP/{label}] Error: {e}")
+        return None
+
+    # -----------------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------------
+
+    def _fmt(self, seconds: Optional[int]) -> str:
+        if not seconds:
+            return "0:00"
+        try:
+            s = int(seconds)
+            return f"{s // 60}:{s % 60:02d}"
+        except (ValueError, TypeError):
+            return "0:00"
 
 
 ================================================================================
