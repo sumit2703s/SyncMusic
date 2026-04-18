@@ -1,9 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
-const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace, onNext, isHost }, ref) => {
+const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange, onSongReplace, onNext, isHost, userId, hostId }, ref) => {
   const audioRef = useRef(null);
   const ytPlayerRef = useRef(null);
-  const suppressEmitRef = useRef(false);
+  const suppressOutgoingRef = useRef(false); // RENAME: suppressEmitRef -> suppressOutgoingRef
   const [isYTReady, setIsYTReady] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -39,25 +39,40 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
       if (song?.source === "youtube") ytPlayerRef.current?.pauseVideo();
       else audioRef.current?.pause();
     },
+    // NEW METHOD — called when joining room or receiving room_state
+    syncTo: (timestamp, isPlaying) => {
+      suppressOutgoingRef.current = true;
+      
+      if (song?.source === "youtube" && ytPlayerRef.current) {
+        ytPlayerRef.current.seekTo(timestamp, true);
+        if (isPlaying) ytPlayerRef.current.playVideo();
+        else ytPlayerRef.current.pauseVideo();
+      } else if (audioRef.current) {
+        audioRef.current.currentTime = timestamp;
+        if (isPlaying) audioRef.current.play().catch(() => {});
+        else audioRef.current.pause();
+      }
+      
+      setTimeout(() => { suppressOutgoingRef.current = false; }, 1000);
+    }
   }));
 
   // 2. Lifecycle & Sync
   useEffect(() => {
     if (song?.source === "youtube") {
-      // YouTube Logic
       if (!isYTReady || !song?.songId) return;
 
       const videoId = song.songId.replace("yt-", "");
 
       if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
-        suppressEmitRef.current = true;
+        suppressOutgoingRef.current = true;
         ytPlayerRef.current.loadVideoById({
           videoId: videoId,
           startSeconds: Number(song.timestamp || 0)
         });
         if (song.isPlaying) ytPlayerRef.current.playVideo();
         else ytPlayerRef.current.pauseVideo();
-        setTimeout(() => { suppressEmitRef.current = false; }, 1000);
+        setTimeout(() => { suppressOutgoingRef.current = false; }, 1000);
       } else {
         ytPlayerRef.current = new window.YT.Player("yt-player", {
           height: "100%",
@@ -79,7 +94,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
               else event.target.pauseVideo();
             },
             onStateChange: (event) => {
-              if (suppressEmitRef.current) return;
+              if (suppressOutgoingRef.current) return;
               if (event.data === window.YT.PlayerState.PLAYING) {
                 onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
               } else if (event.data === window.YT.PlayerState.PAUSED) {
@@ -92,7 +107,6 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
         });
       }
     } else {
-      // Audio Tag Logic (Preview)
       if (ytPlayerRef.current) {
         ytPlayerRef.current.destroy();
         ytPlayerRef.current = null;
@@ -102,19 +116,18 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
       if (!audio || !song?.previewUrl) return;
 
       if (audio.src !== song.previewUrl) {
-        suppressEmitRef.current = true;
+        suppressOutgoingRef.current = true;
         audio.src = song.previewUrl;
         audio.currentTime = Number(song.timestamp || 0);
         audio.load();
         if (song.isPlaying) audio.play().catch(() => { });
-        setTimeout(() => { suppressEmitRef.current = false; }, 1000);
+        setTimeout(() => { suppressOutgoingRef.current = false; }, 1000);
       } else {
-        // Just sync state
         const diff = Math.abs(audio.currentTime - Number(song.timestamp || 0));
         if (diff > 2.0) {
-          suppressEmitRef.current = true;
+          suppressOutgoingRef.current = true;
           audio.currentTime = Number(song.timestamp || 0);
-          setTimeout(() => { suppressEmitRef.current = false; }, 500);
+          setTimeout(() => { suppressOutgoingRef.current = false; }, 500);
         }
         if (song.isPlaying && audio.paused) audio.play().catch(() => { });
         else if (!song.isPlaying && !audio.paused) audio.pause();
@@ -122,50 +135,54 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     }
   }, [song?.songId, isYTReady, song?.source, onPlaybackChange, isHost, onNext, song?.previewUrl]);
 
-  // 3. Socket sync_time handler
+  // 3. FIX sync_time socket handler (incoming)
   useEffect(() => {
     if (!socket) return;
     const handleSync = ({ timestamp, isPlaying, songId }) => {
       if (songId && songId !== song?.songId) return;
-      if (suppressEmitRef.current) return;
-
-      suppressEmitRef.current = true;
+      
+      // NO suppression check here — always sync incoming
       if (song?.source === "youtube" && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
-        if (Math.abs(ytPlayerRef.current.getCurrentTime() - timestamp) > 1.2) {
+        const current = ytPlayerRef.current.getCurrentTime() || 0;
+        if (Math.abs(current - timestamp) > 1.2) {
           ytPlayerRef.current.seekTo(timestamp, true);
+          if (isPlaying) ytPlayerRef.current.playVideo();
+          else ytPlayerRef.current.pauseVideo();
         }
-        if (isPlaying) ytPlayerRef.current.playVideo();
-        else ytPlayerRef.current.pauseVideo();
       } else if (audioRef.current && song?.source !== "youtube") {
         const audio = audioRef.current;
-        if (Math.abs(audio.currentTime - timestamp) > 1.2) {
+        const current = audio.currentTime || 0;
+        if (Math.abs(current - timestamp) > 1.2) {
+          suppressOutgoingRef.current = true;
           audio.currentTime = timestamp;
+          if (isPlaying) audio.play().catch(() => {});
+          else audio.pause();
+          setTimeout(() => { suppressOutgoingRef.current = false; }, 300);
         }
-        if (isPlaying && audio.paused) audio.play().catch(() => { });
-        else if (!isPlaying && !audio.paused) audio.pause();
       }
-      setTimeout(() => { suppressEmitRef.current = false; }, 800);
     };
     socket.on("sync_time", handleSync);
     return () => socket.off("sync_time", handleSync);
   }, [socket, song?.songId, song?.source]);
 
-  // 4. Heartbeat
+  // 4. FIX heartbeat — only HOST emits sync_time
   useEffect(() => {
     const interval = setInterval(() => {
-      if (!roomId || suppressEmitRef.current || !song?.songId) return;
-      let ts = 0, playing = false;
+      const isHostLocal = hostId === userId; 
+      if (!isHostLocal || !roomId || suppressOutgoingRef.current || !song?.songId) return;
+      
+      let timestamp = 0;
       if (song?.source === "youtube" && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
-        ts = ytPlayerRef.current.getCurrentTime();
-        playing = ytPlayerRef.current.getPlayerState() === window.YT.PlayerState.PLAYING;
+        timestamp = ytPlayerRef.current.getCurrentTime() || 0;
       } else if (audioRef.current && song?.source !== "youtube") {
-        ts = audioRef.current.currentTime;
-        playing = !audioRef.current.paused;
+        timestamp = audioRef.current.currentTime || 0;
       }
-      if (ts !== undefined) onSyncEmit(ts, playing, song.songId);
+      
+      const isPlaying = song?.isPlaying || false;
+      if (timestamp !== undefined) onSyncEmit(timestamp, isPlaying, song.songId);
     }, 5000);
     return () => clearInterval(interval);
-  }, [roomId, onSyncEmit, song?.songId, song?.source]);
+  }, [roomId, onSyncEmit, song?.songId, song?.source, hostId, userId]);
 
   // 5. Shared Events for Audio tag
   useEffect(() => {
@@ -175,8 +192,8 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     const onTimeUpdate = () => setCurrentTime(audio.currentTime);
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onEnded = () => { if (isHost && onNext) onNext(); };
-    const onPlay = () => { if (!suppressEmitRef.current) onPlaybackChange("play", audio.currentTime, song?.songId); };
-    const onPause = () => { if (!suppressEmitRef.current) onPlaybackChange("pause", audio.currentTime, song?.songId); };
+    const onPlay = () => { if (!suppressOutgoingRef.current) onPlaybackChange("play", audio.currentTime, song?.songId); };
+    const onPause = () => { if (!suppressOutgoingRef.current) onPlaybackChange("pause", audio.currentTime, song?.songId); };
 
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);

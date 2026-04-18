@@ -76,10 +76,19 @@ export default function App() {
     socket.on("connect_error", (err) => { setConnected(false); setConnectionError(err?.message || "Connection error"); });
     socket.on("disconnect", (reason) => { setConnected(false); setConnectionError(`Disconnected: ${reason}`); });
 
-    socket.on("room_state", (p) => {
-      setState(p.state || {}); setQueue(p.queue || []); setUsers(p.users || []);
-      if (p.syncTime && p.state?.songId) {
-        socket.emit("sync_time", { roomId: p.roomId, songId: p.state.songId, timestamp: p.syncTime, isPlaying: p.state?.isPlaying });
+    socket.on("room_state", (payload) => {
+      const newState = payload.state || {};
+      setState(newState);
+      setQueue(payload.queue || []);
+      setUsers(payload.users || []);
+      
+      // Force player to sync immediately on join
+      if (payload.syncTime != null && newState.songId) {
+        setTimeout(() => {
+          if (playerRef.current) {
+            playerRef.current.syncTo(payload.syncTime, newState.isPlaying);
+          }
+        }, 1500); // wait for player to initialize
       }
     });
     socket.on("queue_updated", ({ queue: q }) => setQueue(q || []));
@@ -217,6 +226,8 @@ export default function App() {
             socket={socket}
             roomId={roomId}
             song={state}
+            userId={userId}
+            hostId={state?.hostId}
             onSyncEmit={onSyncEmit}
             onPlaybackChange={onPlaybackChange}
             onSongReplace={handleSongReplace}
