@@ -170,9 +170,9 @@ async def play_song(sid, data):
             "startedAt": time.time(),
         }
     )
-    await redis_service.set_room_state(room_id, state)
-    # FIX: Remove skip_sid
+    # FIX: Emit first, then save to Redis to minimize delay
     await sio.emit("song_changed", {"roomId": room_id, "state": state}, room=room_id)
+    await redis_service.set_room_state(room_id, state)
     print("DEBUG: play_song [EMIT_SUCCESS]")
     return {"success": True}
 
@@ -183,9 +183,9 @@ async def pause_song(sid, data):
     timestamp = float(data.get("timestamp", 0.0))
     state = await redis_service.get_room_state(room_id) or {}
     state.update({"timestamp": timestamp, "isPlaying": False, "startedAt": None})
-    await redis_service.set_room_state(room_id, state)
-    # FIX: Remove skip_sid
+    # FIX: Emit first
     await sio.emit("song_paused", {"roomId": room_id, "state": state}, room=room_id)
+    await redis_service.set_room_state(room_id, state)
 
 
 @sio.on("sync_time")
@@ -211,14 +211,14 @@ async def sync_time(sid, data):
             "startedAt": time.time() if is_playing else None,
         }
     )
-    await redis_service.set_room_state(room_id, state)
-    # FIX: Remove skip_sid
+    # FIX: Emit first
     await sio.emit("sync_time", {
         "roomId": room_id, 
         "songId": song_id,
         "timestamp": timestamp, 
         "isPlaying": is_playing
     }, room=room_id)
+    await redis_service.set_room_state(room_id, state)
 
 
 @sio.on("add_to_queue")
@@ -283,9 +283,10 @@ async def next_song(sid, data):
             "startedAt": time.time(),
         }
     )
+    # FIX: Emit first
+    await sio.emit("song_changed", {"roomId": room_id, "state": state, "song": song, "queue": queue}, room=room_id)
     await redis_service.set_room_state(room_id, state)
     queue = await redis_service.get_queue(room_id)
-    await sio.emit("song_changed", {"roomId": room_id, "state": state, "song": song, "queue": queue}, room=room_id)
 
 
 @sio.on("prev_song")
@@ -310,6 +311,6 @@ async def prev_song(sid, data):
             "isPlaying": True,
         }
     )
-    await redis_service.set_room_state(room_id, state)
-    # FIX: Remove skip_sid
+    # FIX: Emit first
     await sio.emit("song_restarted", {"roomId": room_id, "state": state, "song": previous_song}, room=room_id)
+    await redis_service.set_room_state(room_id, state)

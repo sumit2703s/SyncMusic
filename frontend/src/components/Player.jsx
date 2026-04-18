@@ -5,12 +5,12 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
   const ytPlayerRef = useRef(null);
   const suppressOutgoingRef = useRef(false);
   const loadedSongIdRef = useRef(null);
-  const pendingSyncRef = useRef(null); // NEW: Store sync data if player not ready
+  const pendingSyncRef = useRef(null);
   const [isYTReady, setIsYTReady] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // 1. YouTube IFrame API Loader
+  // 1. YouTube IFrame API Loader (No changes)
   useEffect(() => {
     if (window.YT && window.YT.Player) {
       setIsYTReady(true);
@@ -50,7 +50,6 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
           else ytPlayerRef.current.pauseVideo();
           pendingSyncRef.current = null;
         } else {
-          // If not ready, queue it for when onReady fires
           pendingSyncRef.current = { timestamp, isPlaying };
         }
       } else if (audioRef.current && song?.source !== "youtube") {
@@ -58,11 +57,12 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
         if (isPlaying) audioRef.current.play().catch(() => {});
         else audioRef.current.pause();
       }
-      setTimeout(() => { suppressOutgoingRef.current = false; }, 1000);
+      // FIX: Remove internal setTimeout delay
+      suppressOutgoingRef.current = false;
     }
   }));
 
-  // 2. STRICT LIFECYCLE: Destroy and Re-init on Song Change
+  // 2. OPTIMIZED LIFECYCLE: Keep player if same videoId
   useEffect(() => {
     if (!song?.songId) return;
 
@@ -70,53 +70,57 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
       if (!isYTReady) return;
       const videoId = song.songId.replace("yt-", "");
 
-      if (loadedSongIdRef.current !== song.songId) {
-        if (ytPlayerRef.current) {
-          try { ytPlayerRef.current.destroy(); } catch(e) { console.warn("Player destroy failed", e); }
-          ytPlayerRef.current = null;
-        }
+      // OPTIMIZATION: If same player exists, just loadVideo
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === "function") {
+          if (loadedSongIdRef.current !== song.songId) {
+            loadedSongIdRef.current = song.songId;
+            suppressOutgoingRef.current = true;
+            ytPlayerRef.current.loadVideoById({
+              videoId: videoId,
+              startSeconds: Number(song.timestamp || 0)
+            });
+            if (song.isPlaying) ytPlayerRef.current.playVideo();
+            else ytPlayerRef.current.pauseVideo();
+            setTimeout(() => { suppressOutgoingRef.current = false; }, 500);
+          }
+          return;
+      }
 
-        const playerDiv = document.getElementById("yt-player");
-        if (playerDiv) playerDiv.innerHTML = ""; 
-
-        ytPlayerRef.current = new window.YT.Player("yt-player", {
-          height: "100%",
-          width: "100%",
-          videoId: videoId,
-          playerVars: {
-            autoplay: song.isPlaying ? 1 : 0,
-            controls: 1,
-            rel: 0,
-            fs: 1,
-            origin: window.location.origin,
-            enablejsapi: 1,
-            playsinline: 1
+      // If no player, create new one
+      ytPlayerRef.current = new window.YT.Player("yt-player", {
+        height: "100%",
+        width: "100%",
+        videoId: videoId,
+        playerVars: {
+          autoplay: song.isPlaying ? 1 : 0,
+          controls: 1,
+          rel: 0,
+          fs: 1,
+          origin: window.location.origin,
+          enablejsapi: 1,
+          playsinline: 1
+        },
+        events: {
+          onReady: (event) => {
+            loadedSongIdRef.current = song.songId;
+            const initialSync = pendingSyncRef.current || { timestamp: song.timestamp, isPlaying: song.isPlaying };
+            event.target.seekTo(Number(initialSync.timestamp || 0));
+            if (initialSync.isPlaying) event.target.playVideo();
+            else event.target.pauseVideo();
+            pendingSyncRef.current = null;
           },
-          events: {
-            onReady: (event) => {
-              loadedSongIdRef.current = song.songId;
-              
-              // Apply pending sync if it exists, else use song defaults
-              const initialSync = pendingSyncRef.current || { timestamp: song.timestamp, isPlaying: song.isPlaying };
-              event.target.seekTo(Number(initialSync.timestamp || 0));
-              if (initialSync.isPlaying) event.target.playVideo();
-              else event.target.pauseVideo();
-              
-              pendingSyncRef.current = null; // clear after apply
-            },
-            onStateChange: (event) => {
-              if (suppressOutgoingRef.current) return;
-              if (event.data === window.YT.PlayerState.PLAYING) {
-                onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
-              } else if (event.data === window.YT.PlayerState.PAUSED) {
-                onPlaybackChange("pause", event.target.getCurrentTime(), song?.songId);
-              } else if (event.data === window.YT.PlayerState.ENDED) {
-                if (isHost && onNext) onNext();
-              }
+          onStateChange: (event) => {
+            if (suppressOutgoingRef.current) return;
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              onPlaybackChange("play", event.target.getCurrentTime(), song?.songId);
+            } else if (event.data === window.YT.PlayerState.PAUSED) {
+              onPlaybackChange("pause", event.target.getCurrentTime(), song?.songId);
+            } else if (event.data === window.YT.PlayerState.ENDED) {
+              if (isHost && onNext) onNext();
             }
           }
-        });
-      }
+        }
+      });
     } else {
       // Audio Tag Logic
       if (ytPlayerRef.current) {
@@ -139,12 +143,11 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     }
   }, [song?.songId, isYTReady, song?.source, isHost, onNext, song?.previewUrl]);
 
-  // 3. Socket sync_time handler (incoming)
+  // 3. Socket sync_time handler (No changes)
   useEffect(() => {
     if (!socket) return;
     const handleSync = ({ timestamp, isPlaying, songId }) => {
       if (songId && songId !== song?.songId) return;
-      
       if (song?.source === "youtube") {
         if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
           const current = ytPlayerRef.current.getCurrentTime() || 0;
@@ -154,7 +157,6 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
             else ytPlayerRef.current.pauseVideo();
           }
         } else {
-          // Store it if we don't have a player yet
           pendingSyncRef.current = { timestamp, isPlaying };
         }
       } else if (audioRef.current && song?.source !== "youtube") {
@@ -173,7 +175,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     return () => socket.off("sync_time", handleSync);
   }, [socket, song?.songId, song?.source]);
 
-  // 4. Heartbeat — only HOST emits sync_time
+  // 4. Heartbeat (No changes)
   useEffect(() => {
     const interval = setInterval(() => {
       const isHostLocal = hostId === userId; 
@@ -192,7 +194,7 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
     return () => clearInterval(interval);
   }, [roomId, onSyncEmit, song?.songId, song?.source, hostId, userId]);
 
-  // 5. Shared Events for Audio tag
+  // 5. Shared Events for Audio tag (No changes)
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || song?.source === "youtube") return;

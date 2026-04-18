@@ -88,7 +88,7 @@ export default function App() {
           if (playerRef.current) {
             playerRef.current.syncTo(payload.syncTime, newState.isPlaying);
           }
-        }, 1500); // wait for player to initialize
+        }, 500); // Reduced from 1500ms for faster join sync
       }
     });
     socket.on("queue_updated", ({ queue: q }) => setQueue(q || []));
@@ -101,12 +101,10 @@ export default function App() {
       setState(nextState || {});          // update state on ALL devices
       if (nextQueue) setQueue(nextQueue);
       
-      // Force player sync on EVERY device including initiator
-      setTimeout(() => {
-        if (playerRef.current && nextState?.songId) {
-          playerRef.current.syncTo(nextState.timestamp || 0, nextState.isPlaying);
-        }
-      }, 500);
+      // Force player sync IMMEDIATELY
+      if (playerRef.current && nextState?.songId) {
+        playerRef.current.syncTo(nextState.timestamp || 0, nextState.isPlaying);
+      }
     });
     socket.on("song_paused", ({ state: nextState }) => {
       setState(nextState || {});
