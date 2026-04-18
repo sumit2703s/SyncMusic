@@ -97,8 +97,23 @@ export default function App() {
       setUsers((prev) => prev.some((x) => x.userId === u.userId) ? prev : [...prev, u]);
     });
     socket.on("user_left", ({ users: u }) => setUsers(u || []));
-    socket.on("song_changed", ({ state: s, queue: q }) => { setState(s || {}); if (q) setQueue(q); });
-    socket.on("song_paused", ({ state: s }) => setState(s || {}));
+    socket.on("song_changed", ({ state: nextState, queue: nextQueue }) => {
+      setState(nextState || {});          // update state on ALL devices
+      if (nextQueue) setQueue(nextQueue);
+      
+      // Force player sync on EVERY device including initiator
+      setTimeout(() => {
+        if (playerRef.current && nextState?.songId) {
+          playerRef.current.syncTo(nextState.timestamp || 0, nextState.isPlaying);
+        }
+      }, 500);
+    });
+    socket.on("song_paused", ({ state: nextState }) => {
+      setState(nextState || {});
+      if (playerRef.current) {
+        playerRef.current.syncTo(nextState.timestamp || 0, false);
+      }
+    });
     socket.on("song_restarted", ({ state: s }) => setState(s || {}));
     socket.on("host_changed", ({ hostId: h }) => setState((p) => ({ ...p, hostId: h })));
     socket.on("queue_empty", () => setState((p) => ({ ...p, songId: null, isPlaying: false, title: null, artist: null, thumbnail: null })));
