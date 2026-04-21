@@ -254,25 +254,27 @@ const Player = forwardRef(({ song, roomId, socket, onSyncEmit, onPlaybackChange,
   return (
     <div className="player-card">
       <div className="player-hero">
-        <div
-          className="album-art-wrap"
-          style={isYouTube
-            ? { width: "100%", aspectRatio: "16/9", position: "relative" }
-            : { width: "100%", height: "200px", position: "relative" }
-          }
-        >
-          {/* YouTube player — always in DOM, hidden when preview */}
-          <div style={{ display: isYouTube ? "block" : "none", width: "100%", height: "100%", borderRadius: "12px", overflow: "hidden" }}>
-            <div id="yt-player" />
-          </div>
+        {/* YouTube player — never display:none (YT API can't init inside hidden elements) */}
+        <div style={{
+          width: "100%",
+          aspectRatio: isYouTube ? "16/9" : undefined,
+          height: isYouTube ? "auto" : "0px",
+          overflow: "hidden",
+          borderRadius: "12px",
+          transition: "height 0.2s ease",
+        }}>
+          <div id="yt-player" />
+        </div>
 
-          {/* Preview album art */}
-          {!isYouTube && (
-            song?.thumbnail
+        {/* Preview album art — only for non-YouTube songs */}
+        {!isYouTube && (
+          <div className="album-art-wrap" style={{ width: "100%", height: "200px", position: "relative" }}>
+            {song?.thumbnail
               ? <img className="album-art" src={song.thumbnail} alt={song.title} style={{ width: "100%", height: "100%", borderRadius: "12px", objectFit: "cover" }} />
               : <div className="album-art album-art--empty"><span>♪</span></div>
-          )}
-        </div>
+            }
+          </div>
+        )}
 
         <div className="player-meta" style={{ marginTop: "16px", textAlign: "center" }}>
           <div className="player-title" style={{ fontSize: "1.2rem", fontWeight: "bold" }}>{song?.title || "Nothing playing"}</div>
