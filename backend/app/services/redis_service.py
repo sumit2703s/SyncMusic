@@ -22,7 +22,8 @@ class RedisService:
             # Do not ping in __init__: this module is imported inside an active event loop.
             self.redis = Redis.from_url(redis_url, decode_responses=True)
         except Exception as e:
-            print(f"Error creating Redis client for {redis_url}: {e}")
+            print(f"WARNING: Redis unavailable ({redis_url}): {e}")
+            print("WARNING: Using in-memory storage — ALL DATA WILL BE LOST on server restart!")
             self.redis = None
 
     async def ping(self) -> bool:
@@ -185,6 +186,27 @@ class RedisService:
         except Exception as e:
             print(f"Error getting queue: {e}")
             return []
+
+    async def remove_from_queue(self, room_id: str, index: int) -> bool:
+        """Remove a song from the queue by index."""
+        if self.redis is None:
+            async with self._memory_lock:
+                queue = self._memory_queue.get(room_id, [])
+                if 0 <= index < len(queue):
+                    queue.pop(index)
+                    return True
+                return False
+        try:
+            queue_len = await self.redis.llen(self._queue_key(room_id))
+            if index < 0 or index >= queue_len:
+                return False
+            sentinel = f"__REMOVED__{index}_{time.time()}"
+            await self.redis.lset(self._queue_key(room_id), index, sentinel)
+            await self.redis.lrem(self._queue_key(room_id), 1, sentinel)
+            return True
+        except Exception as e:
+            print(f"Error removing from queue: {e}")
+            return False
 
     async def push_history(self, room_id: str, song: dict[str, Any]) -> None:
         if self.redis is None:

@@ -638,6 +638,18 @@ body {
   opacity: 0.5;
 }
 
+.remove-queue-btn {
+  color: var(--muted) !important;
+  font-size: 0.8rem !important;
+  padding: 2px 8px !important;
+  min-width: auto !important;
+}
+
+.remove-queue-btn:hover {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    SEARCH
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */

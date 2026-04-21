@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-const Queue = ({ queue = [], onSearch, onPlaySong, currentSongId }) => {
+// Fix #14: Added onRemoveSong prop for queue item removal
+const Queue = ({ queue = [], onSearch, onPlaySong, onRemoveSong, currentSongId }) => {
   const [open, setOpen] = useState(false);
 
   return (
@@ -28,6 +29,13 @@ const Queue = ({ queue = [], onSearch, onPlaySong, currentSongId }) => {
                   onClick={() => onPlaySong?.(song)}
                 >
                   {currentSongId === song.songId ? "Playing" : "Play"}
+                </button>
+                <button
+                  className="secondary remove-queue-btn"
+                  onClick={() => onRemoveSong?.(index)}
+                  title="Remove from queue"
+                >
+                  ✕
                 </button>
               </div>
             </div>

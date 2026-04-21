@@ -6,7 +6,7 @@ import Users from "./components/Users";
 import { useSocket } from "./hooks/useSocket";
 import {
   addSongToQueue, createRoom, joinRoom, kickMember,
-  pauseSongInRoom, playSongInRoom, searchMusic,
+  searchMusic,
 } from "./services/api";
 
 const randomId = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
@@ -78,18 +78,14 @@ export default function App() {
 
     socket.on("room_state", (payload) => {
       const newState = payload.state || {};
+      // Set timestamp to computed sync position for accurate join
+      if (payload.syncTime != null) {
+        newState.timestamp = payload.syncTime;
+      }
       setState(newState);
       setQueue(payload.queue || []);
       setUsers(payload.users || []);
-      
-      // Force player to sync immediately on join
-      if (payload.syncTime != null && newState.songId) {
-        setTimeout(() => {
-          if (playerRef.current) {
-            playerRef.current.syncTo(payload.syncTime, newState.isPlaying);
-          }
-        }, 500); // Reduced from 1500ms for faster join sync
-      }
+      // Player auto-loads via its useEffect when state/songId changes
     });
     socket.on("queue_updated", ({ queue: q }) => setQueue(q || []));
     socket.on("user_joined", ({ user: u }) => {
@@ -97,22 +93,36 @@ export default function App() {
       setUsers((prev) => prev.some((x) => x.userId === u.userId) ? prev : [...prev, u]);
     });
     socket.on("user_left", ({ users: u }) => setUsers(u || []));
-    socket.on("song_changed", ({ state: nextState, queue: nextQueue }) => {
-      setState(nextState || {});          // update state on ALL devices
-      if (nextQueue) setQueue(nextQueue);
-      
-      // Force player sync IMMEDIATELY
-      if (playerRef.current && nextState?.songId) {
-        playerRef.current.syncTo(nextState.timestamp || 0, nextState.isPlaying);
+    socket.on("song_changed", ({ state: nextState, queue: nextQueue, serverNow }) => {
+      if (nextState) {
+        // Compensate for network delay: if the server says the song started at time X,
+        // and we received this message (serverNow -> now = transit time), adjust timestamp
+        if (nextState.startedAt && serverNow && nextState.isPlaying) {
+          const networkDelay = Math.max(0, (Date.now() / 1000) - serverNow);
+          nextState.timestamp = (nextState.timestamp || 0) + networkDelay;
+        }
       }
+      setState(nextState || {});
+      if (nextQueue) setQueue(nextQueue);
+      // Player auto-loads via its useEffect when songId changes
     });
-    socket.on("song_paused", ({ state: nextState }) => {
+    socket.on("song_paused", ({ state: nextState, serverNow }) => {
+      if (nextState && serverNow) {
+        const networkDelay = Math.max(0, (Date.now() / 1000) - serverNow);
+        nextState.timestamp = (nextState.timestamp || 0) + networkDelay;
+      }
       setState(nextState || {});
       if (playerRef.current) {
         playerRef.current.syncTo(nextState.timestamp || 0, false);
       }
     });
-    socket.on("song_restarted", ({ state: s }) => setState(s || {}));
+    socket.on("song_restarted", ({ state: s, serverNow }) => {
+      if (s && s.startedAt && serverNow && s.isPlaying) {
+        const networkDelay = Math.max(0, (Date.now() / 1000) - serverNow);
+        s.timestamp = (s.timestamp || 0) + networkDelay;
+      }
+      setState(s || {});
+    });
     socket.on("host_changed", ({ hostId: h }) => setState((p) => ({ ...p, hostId: h })));
     socket.on("queue_empty", () => setState((p) => ({ ...p, songId: null, isPlaying: false, title: null, artist: null, thumbnail: null })));
     socket.on("kicked", ({ roomId: kr }) => {
@@ -127,12 +137,14 @@ export default function App() {
     };
   }, [socket, roomId]);
 
+  // Fix #13: Keep Render HTTP service awake + ensure socket stays connected
   useEffect(() => {
     const keepAlive = setInterval(() => {
-      fetch(import.meta.env.VITE_BACKEND_URL + "/health").catch(() => {})
-    }, 25000)
-    return () => clearInterval(keepAlive)
-  }, []);
+      fetch(import.meta.env.VITE_BACKEND_URL + "/health").catch(() => {});
+      if (socket && !socket.connected) socket.connect();
+    }, 25000);
+    return () => clearInterval(keepAlive);
+  }, [socket]);
 
   // ── Song controls ─────────────────────────────────────────────────────
   const playSelectedSong = useCallback((song) => {
@@ -165,18 +177,22 @@ export default function App() {
     socket.emit("sync_time", { roomId, songId, timestamp, isPlaying });
   }, [roomId, socket]);
 
+  // Fix #2: Use socket instead of REST to avoid dual-fire race conditions
   const onPlaybackChange = useCallback((type, timestamp, songId) => {
     if (!roomId || !songId) return;
     if (type === "play") {
-      playSongInRoom(roomId, { ...state, songId, durationSec: state.durationSec || 30 }, timestamp).catch(console.error);
+      socket.emit("sync_time", { roomId, songId, timestamp, isPlaying: true });
     } else {
-      pauseSongInRoom(roomId, timestamp).catch(console.error);
+      socket.emit("pause_song", { roomId, timestamp });
     }
-  }, [roomId, state]);
+  }, [roomId, socket]);
 
-  const handleSongReplace = useCallback((fallbackSong) => {
-    if (!roomId || !fallbackSong?.songId) return;
-    socket.emit("play_song", { roomId, song: fallbackSong, timestamp: 0 });
+  // Fix #14: Allow removing songs from the queue
+  const removeFromQueue = useCallback((index) => {
+    if (!roomId || index == null) return;
+    socket.emit("remove_from_queue", { roomId, index }, (res) => {
+      if (res?.queue) setQueue(res.queue);
+    });
   }, [roomId, socket]);
 
   // ── Search ────────────────────────────────────────────────────────────
@@ -184,7 +200,8 @@ export default function App() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [addingSongId, setAddingSongId] = useState("");
-  const [searchSource, setSearchSource] = useState("full");
+  // Fix #10: Default to preview (fast & reliable) instead of full (slow YouTube resolve)
+  const [searchSource, setSearchSource] = useState("preview");
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -250,8 +267,8 @@ export default function App() {
             hostId={state?.hostId}
             onSyncEmit={onSyncEmit}
             onPlaybackChange={onPlaybackChange}
-            onSongReplace={handleSongReplace}
             onNext={goToNextSong}
+            onPrev={goToPrevSong}
             isHost={isHost}
           />
           {/* Transport */}
@@ -284,6 +301,7 @@ export default function App() {
             queue={queue}
             currentSongId={state.songId}
             onPlaySong={playSelectedSong}
+            onRemoveSong={removeFromQueue}
             onSearch={(close) => (
               <div className="search-container">
                 <div className="source-toggle">

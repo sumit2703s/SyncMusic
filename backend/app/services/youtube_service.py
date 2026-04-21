@@ -94,6 +94,9 @@ class YouTubeService:
         }
 
         self.ytmusic = YTMusic()
+        # Fix #4: Cache resolved URLs to avoid re-resolution (URLs valid ~6h)
+        self._url_cache: dict[str, tuple[str, float]] = {}
+        self.CACHE_TTL = 4 * 3600  # 4 hours
         self._invidious_cache: list[str] = []
         self._invidious_fetched_at: float = 0
 
@@ -163,8 +166,14 @@ class YouTubeService:
     async def resolve_url(self, video_id: str) -> Optional[str]:
         """
         Try every layer in order. Return the first working audio URL.
-        Layers run concurrently where possible to reduce latency.
+        Results are cached for CACHE_TTL seconds to avoid re-resolution.
         """
+        # Fix #4: Check cache first
+        cached = self._url_cache.get(video_id)
+        if cached and cached[1] > time.time():
+            print(f"[RESOLVE] Cache HIT for {video_id}")
+            return cached[0]
+
         print(f"[RESOLVE] Starting for {video_id}")
 
         # Layer 1 + 2 in parallel (both are HTTP, fast)
@@ -176,21 +185,25 @@ class YouTubeService:
         if piped_url:
             invidious_task.cancel()
             print(f"[RESOLVE] Piped success: {video_id}")
+            self._url_cache[video_id] = (piped_url, time.time() + self.CACHE_TTL)
             return piped_url
 
         invidious_url = await invidious_task
         if invidious_url:
             print(f"[RESOLVE] Invidious success: {video_id}")
+            self._url_cache[video_id] = (invidious_url, time.time() + self.CACHE_TTL)
             return invidious_url
 
         # Layer 3: yt-dlp tv_embedded
         url = await self._via_ytdlp(video_id, self.ydl_resolve_opts_tv, "tv_embedded")
         if url:
+            self._url_cache[video_id] = (url, time.time() + self.CACHE_TTL)
             return url
 
         # Layer 4: yt-dlp web client
         url = await self._via_ytdlp(video_id, self.ydl_resolve_opts_web, "web")
         if url:
+            self._url_cache[video_id] = (url, time.time() + self.CACHE_TTL)
             return url
 
         print(f"[RESOLVE] ALL LAYERS FAILED for {video_id}")

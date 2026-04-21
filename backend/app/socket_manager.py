@@ -20,7 +20,12 @@ sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins=allowed_origins,
 )
+
+# Fix #5: These in-memory maps only work with a single server instance.
+# For horizontal scaling, use Redis Pub/Sub adapter for Socket.IO
+# and store these mappings in Redis instead.
 user_sid_map: dict[str, str] = {}
+sid_room_map: dict[str, set[str]] = {}
 
 
 def _compute_sync_time(state: dict[str, Any]) -> float:
@@ -35,12 +40,28 @@ async def connect(sid, environ, auth):
     await sio.emit("connected", {"sid": sid}, room=sid)
 
 
+# Fix #12: Disconnect now properly cleans up users from all rooms
 @sio.event
 async def disconnect(sid):
+    """Clean up user from all rooms they were in on disconnect."""
     disconnected_user_ids = [user_id for user_id, mapped_sid in user_sid_map.items() if mapped_sid == sid]
+    rooms = sid_room_map.pop(sid, set())
+
     for user_id in disconnected_user_ids:
         user_sid_map.pop(user_id, None)
-    return
+        for room_id in rooms:
+            await redis_service.remove_user(room_id, user_id)
+            users = await redis_service.get_users(room_id)
+            state = await redis_service.get_room_state(room_id) or {}
+
+            # Transfer host if the disconnected user was host
+            if state.get("hostId") == user_id and users:
+                state["hostId"] = users[0]["userId"]
+                await redis_service.set_room_state(room_id, state)
+                await sio.emit("host_changed", {"roomId": room_id, "hostId": state["hostId"]}, room=room_id)
+
+            await sio.emit("user_left", {"roomId": room_id, "userId": user_id, "users": users}, room=room_id)
+            await redis_service.clear_room_if_empty(room_id, ttl_seconds=3600)
 
 
 @sio.on("join_room")
@@ -53,11 +74,11 @@ async def join_room(sid, data):
         return {"success": False, "error": "Missing roomId, userId, or username"}
 
     await sio.enter_room(sid, room_id)
+    sid_room_map.setdefault(sid, set()).add(room_id)
     user_sid_map[user_id] = sid
     await redis_service.add_user(room_id, user_id, username)
     await mongo_service.upsert_user(user_id, username)
 
-    # 1. FIX join_room handler:
     state = await redis_service.get_room_state(room_id) or {}
     queue = await redis_service.get_queue(room_id)
     users = await redis_service.get_users(room_id)
@@ -88,6 +109,7 @@ async def leave_room(sid, data):
     user_id = data["userId"]
 
     await sio.leave_room(sid, room_id)
+    sid_room_map.get(sid, set()).discard(room_id)
     user_sid_map.pop(user_id, None)
     await redis_service.remove_user(room_id, user_id)
 
@@ -122,6 +144,7 @@ async def kick_user(sid, data):
     target_sid = user_sid_map.pop(target_user_id, None)
     if target_sid:
         await sio.leave_room(target_sid, room_id)
+        sid_room_map.get(target_sid, set()).discard(room_id)
         await sio.emit("kicked", {"roomId": room_id}, room=target_sid)
 
     users = await redis_service.get_users(room_id)
@@ -152,6 +175,7 @@ async def play_song(sid, data):
                 "thumbnail": state.get("thumbnail", ""),
                 "duration": state.get("duration", "0:30"),
                 "durationSec": int(data.get("currentDurationSec", 30)),
+                "source": state.get("source", "preview"),
             },
         )
 
@@ -170,8 +194,7 @@ async def play_song(sid, data):
             "startedAt": time.time(),
         }
     )
-    # FIX: Emit first, then save to Redis to minimize delay
-    await sio.emit("song_changed", {"roomId": room_id, "state": state}, room=room_id)
+    await sio.emit("song_changed", {"roomId": room_id, "state": state, "serverNow": time.time()}, room=room_id)
     await redis_service.set_room_state(room_id, state)
     print("DEBUG: play_song [EMIT_SUCCESS]")
     return {"success": True}
@@ -183,8 +206,7 @@ async def pause_song(sid, data):
     timestamp = float(data.get("timestamp", 0.0))
     state = await redis_service.get_room_state(room_id) or {}
     state.update({"timestamp": timestamp, "isPlaying": False, "startedAt": None})
-    # FIX: Emit first
-    await sio.emit("song_paused", {"roomId": room_id, "state": state}, room=room_id)
+    await sio.emit("song_paused", {"roomId": room_id, "state": state, "serverNow": time.time()}, room=room_id)
     await redis_service.set_room_state(room_id, state)
 
 
@@ -211,7 +233,6 @@ async def sync_time(sid, data):
             "startedAt": time.time() if is_playing else None,
         }
     )
-    # FIX: Emit first
     await sio.emit("sync_time", {
         "roomId": room_id, 
         "songId": song_id,
@@ -244,6 +265,22 @@ async def add_to_queue(sid, data):
         return {"success": False, "error": str(e)}
 
 
+# Fix #14: Allow removing songs from the queue
+@sio.on("remove_from_queue")
+async def remove_from_queue(sid, data):
+    room_id = data.get("roomId")
+    index = data.get("index")
+    if room_id is None or index is None:
+        return {"success": False, "error": "Missing roomId or index"}
+
+    success = await redis_service.remove_from_queue(room_id, int(index))
+    if success:
+        queue = await redis_service.get_queue(room_id)
+        await sio.emit("queue_updated", {"roomId": room_id, "queue": queue}, room=room_id)
+        return {"success": True, "queue": queue}
+    return {"success": False, "error": "Failed to remove song from queue"}
+
+
 @sio.on("next_song")
 async def next_song(sid, data):
     room_id = data["roomId"]
@@ -259,6 +296,7 @@ async def next_song(sid, data):
                 "thumbnail": current_state.get("thumbnail", ""),
                 "duration": current_state.get("duration", "0:30"),
                 "durationSec": int(data.get("currentDurationSec", 30)),
+                "source": current_state.get("source", "preview"),
             },
         )
 
@@ -283,12 +321,13 @@ async def next_song(sid, data):
             "startedAt": time.time(),
         }
     )
-    # FIX: Emit first
-    await sio.emit("song_changed", {"roomId": room_id, "state": state, "song": song, "queue": queue}, room=room_id)
-    await redis_service.set_room_state(room_id, state)
+    # Fix #1: Get queue BEFORE emitting to avoid NameError
     queue = await redis_service.get_queue(room_id)
+    await sio.emit("song_changed", {"roomId": room_id, "state": state, "song": song, "queue": queue, "serverNow": time.time()}, room=room_id)
+    await redis_service.set_room_state(room_id, state)
 
 
+# Fix #3: prev_song now includes source and durationSec fields
 @sio.on("prev_song")
 async def prev_song(sid, data):
     room_id = data["roomId"]
@@ -301,16 +340,17 @@ async def prev_song(sid, data):
     state.update(
         {
             "songId": previous_song["songId"],
-            "previewUrl": previous_song["previewUrl"],
+            "previewUrl": previous_song.get("previewUrl", ""),
             "title": previous_song["title"],
             "artist": previous_song["artist"],
             "thumbnail": previous_song["thumbnail"],
             "duration": previous_song["duration"],
+            "durationSec": previous_song.get("durationSec", 30),
+            "source": previous_song.get("source", "preview"),
             "timestamp": 0.0,
             "startedAt": time.time(),
             "isPlaying": True,
         }
     )
-    # FIX: Emit first
-    await sio.emit("song_restarted", {"roomId": room_id, "state": state, "song": previous_song}, room=room_id)
+    await sio.emit("song_restarted", {"roomId": room_id, "state": state, "song": previous_song, "serverNow": time.time()}, room=room_id)
     await redis_service.set_room_state(room_id, state)

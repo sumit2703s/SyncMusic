@@ -15,7 +15,7 @@ from app.services import mongo_service, redis_service
 
 @router.post("/create")
 async def create_room(payload: CreateRoomRequest):
-    room_id = payload.roomId or secrets.token_hex(3)
+    room_id = payload.roomId or secrets.token_hex(4)
     await redis_service.create_room(room_id, payload.userId)
     await redis_service.add_user(room_id, payload.userId, payload.username)
     await mongo_service.upsert_user(payload.userId, payload.username)
