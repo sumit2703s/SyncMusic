@@ -200,8 +200,7 @@ export default function App() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [addingSongId, setAddingSongId] = useState("");
-  // Fix #10: Default to preview (fast & reliable) instead of full (slow YouTube resolve)
-  const [searchSource, setSearchSource] = useState("preview");
+  const [searchSource, setSearchSource] = useState("full");
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
